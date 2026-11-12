@@ -26,6 +26,7 @@
 #include "m20/m20_platform.h"
 #include "memory.h"
 
+#include <math.h>
 #include <string.h>
 
 #ifndef M20_MAX_PRIMS
@@ -242,21 +243,44 @@ static PRIM *AddPrim(PRIM_TYPE type, int32_t n, int32_t key, HVERT **verts)
     return p;
 }
 
-static void SetVert(HVERT *h, const PHD_VBUF *v, const PHD_UV *uv)
+// A face's vertex while it's set up: screen position (float, unclamped),
+// 1/z, u/z, v/z and light, all of which interpolate linearly on the screen
+typedef struct CVERT {
+    float x, y;
+    float iz, uz, vz;
+    float g;
+} CVERT;
+
+#define MAX_CVERTS 16
+
+// The game's projection clamps vertices to +-32760 (and its integer
+// division rounds): a vertex off the screen (clip bits 0..3) is projected
+// again here from its view position, unclamped, so that a face that
+// reaches far off the screen keeps its shape (a floor seen edge on, its
+// near vertices beside the camera)
+static void SetVert(CVERT *c, const PHD_VBUF *v, const PHD_UV *uv)
 {
-    h->x = v->xs;
-    h->y = v->ys;
-    h->z = (float)v->zv;
-    h->g = v->g;
+    if (v->clip & 15) {
+        float k = (float)PhdPersp / (float)v->zv;
+        c->x = v->xv * k + ViewPort_GetCenterX();
+        c->y = v->yv * k + ViewPort_GetCenterY();
+    } else {
+        c->x = v->xs;
+        c->y = v->ys;
+    }
+    c->iz = 1.0f / (float)v->zv;
+    c->g = v->g;
     if (uv) {
-        h->u = (uv->u1 & 0xFF00) + 0x80;
-        h->v = (uv->v1 & 0xFF00) + 0x80;
+        c->uz = ((uv->u1 & 0xFF00) + 0x80) * c->iz;
+        c->vz = ((uv->v1 & 0xFF00) + 0x80) * c->iz;
+    } else {
+        c->uz = c->vz = 0.0f;
     }
 }
 
 // Clipping at the near plane, from TombATI's HWR_ZedClipper
 static int32_t ZedClip(
-    int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv, HVERT *out)
+    int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv, CVERT *out)
 {
     float near_z = phd_GetNearZ();
     float persp = PhdPersp / near_z;
@@ -268,18 +292,20 @@ static int32_t ZedClip(
         bool in1 = p1->zv >= near_z, in0 = p0->zv >= near_z;
         if (in1 != in0) {
             float t = (near_z - p0->zv) / (float)(p1->zv - p0->zv);
-            HVERT *h = &out[count++];
-            h->x = (p0->xv + (p1->xv - p0->xv) * t) * persp
+            CVERT *c = &out[count++];
+            c->x = (p0->xv + (p1->xv - p0->xv) * t) * persp
                 + ViewPort_GetCenterX();
-            h->y = (p0->yv + (p1->yv - p0->yv) * t) * persp
+            c->y = (p0->yv + (p1->yv - p0->yv) * t) * persp
                 + ViewPort_GetCenterY();
-            h->z = near_z;
-            h->g = p0->g + (p1->g - p0->g) * t;
+            c->iz = 1.0f / near_z;
+            c->g = p0->g + (p1->g - p0->g) * t;
             if (uv) {
                 float uu0 = (u0->u1 & 0xFF00) + 0x80, uu1 = (u1->u1 & 0xFF00) + 0x80;
                 float vv0 = (u0->v1 & 0xFF00) + 0x80, vv1 = (u1->v1 & 0xFF00) + 0x80;
-                h->u = uu0 + (uu1 - uu0) * t;
-                h->v = vv0 + (vv1 - vv0) * t;
+                c->uz = (uu0 + (uu1 - uu0) * t) * c->iz;
+                c->vz = (vv0 + (vv1 - vv0) * t) * c->iz;
+            } else {
+                c->uz = c->vz = 0.0f;
             }
         }
         if (in0) {
@@ -289,11 +315,59 @@ static int32_t ZedClip(
     return count >= 3 ? count : 0;
 }
 
-static bool Visible(const PHD_VBUF *v1, const PHD_VBUF *v2, const PHD_VBUF *v3)
+// Clipping to the screen, one side at a time (Sutherland-Hodgman): side 0
+// x >= 0, 1 x <= W, 2 y >= 0, 3 y <= H
+static int32_t ClipSide(const CVERT *in, int32_t n, CVERT *out, int side)
 {
-    return (v1->ys - v2->ys) * (v3->xs - v2->xs)
-        - (v3->ys - v2->ys) * (v1->xs - v2->xs)
-        >= 0;
+    float lim = side == 1 ? (float)M20_W : side == 3 ? (float)M20_H : 0.0f;
+    int32_t count = 0;
+    for (int32_t i = 0; i < n; i++) {
+        const CVERT *a = &in[i], *b = &in[(i + 1) % n];
+        float da = (side < 2 ? a->x : a->y) - lim;
+        float db = (side < 2 ? b->x : b->y) - lim;
+        if (side & 1) {
+            da = -da;
+            db = -db;
+        }
+        if (da >= 0.0f) {
+            out[count++] = *a;
+        }
+        if ((da >= 0.0f) != (db >= 0.0f) && count < MAX_CVERTS) {
+            float t = da / (da - db);
+            CVERT *c = &out[count++];
+            c->x = a->x + (b->x - a->x) * t;
+            c->y = a->y + (b->y - a->y) * t;
+            c->iz = a->iz + (b->iz - a->iz) * t;
+            c->uz = a->uz + (b->uz - a->uz) * t;
+            c->vz = a->vz + (b->vz - a->vz) * t;
+            c->g = a->g + (b->g - a->g) * t;
+        }
+        if (count >= MAX_CVERTS - 1) {
+            break;
+        }
+    }
+    return count;
+}
+
+static int32_t ClipScreen(CVERT *v, int32_t n)
+{
+    bool out = false;
+    for (int32_t i = 0; i < n; i++) {
+        if (v[i].x < 0.0f || v[i].x > M20_W || v[i].y < 0.0f
+            || v[i].y > M20_H) {
+            out = true;
+            break;
+        }
+    }
+    if (!out) {
+        return n;
+    }
+    CVERT tmp[MAX_CVERTS];
+    n = ClipSide(v, n, tmp, 0);
+    if (n >= 3) n = ClipSide(tmp, n, v, 1);
+    if (n >= 3) n = ClipSide(v, n, tmp, 2);
+    if (n >= 3) n = ClipSide(tmp, n, v, 3);
+    return n >= 3 ? n : 0;
 }
 
 static int32_t FaceKey(PHD_VBUF *const *vb, int32_t n)
@@ -316,6 +390,30 @@ static int32_t FaceKey(PHD_VBUF *const *vb, int32_t n)
     return key >> W2V_SHIFT;
 }
 
+// The face's vertices, clipped, into the list
+static void EmitFace(PRIM_TYPE type, CVERT *c, int32_t n, int32_t key, uint16_t tex)
+{
+    n = ClipScreen(c, n);
+    if (!n) {
+        return;
+    }
+    HVERT *dst;
+    PRIM *p = AddPrim(type, n, key, &dst);
+    if (!p) {
+        return;
+    }
+    p->tex = tex;
+    for (int32_t i = 0; i < n; i++) {
+        float z = 1.0f / c[i].iz;
+        dst[i].x = (int32_t)floorf(c[i].x + 0.5f);
+        dst[i].y = (int32_t)floorf(c[i].y + 0.5f);
+        dst[i].z = z;
+        dst[i].u = (uint16_t)(c[i].uz * z);
+        dst[i].v = (uint16_t)(c[i].vz * z);
+        dst[i].g = (int16_t)c[i].g;
+    }
+}
+
 static void InsertFace(
     PRIM_TYPE type, int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv,
     uint16_t tex)
@@ -328,41 +426,34 @@ static void InsertFace(
     if (clip_and) {
         return;   // all off one side (or all too far: bit 4)
     }
-    bool behind = clip_or < 0;
-    if (!behind) {
-        if (!Visible(vb[0], vb[1], vb[2])) {
-            return;
-        }
-    } else {
+
+    CVERT c[MAX_CVERTS];
+    int32_t count;
+    if (clip_or < 0) {
         if (type == PRIM_G) {
             return;   // as TombATI: flat faces aren't clipped at the near plane
         }
         if (!phd_VisibleZClip(vb[0], vb[1], vb[2])) {
             return;
         }
-    }
-
-    HVERT tmp[8];
-    int32_t count;
-    if (behind) {
-        count = ZedClip(n, vb, uv, tmp);
+        count = ZedClip(n, vb, uv, c);
         if (!count) {
             return;
         }
     } else {
-        count = n;
         for (int32_t i = 0; i < n; i++) {
-            SetVert(&tmp[i], vb[i], uv ? uv[i] : NULL);
+            SetVert(&c[i], vb[i], uv ? uv[i] : NULL);
         }
+        // facing the camera (TombATI's test, in float: the coordinates can
+        // be far beyond 16 bits)
+        float area = (c[0].y - c[1].y) * (c[2].x - c[1].x)
+            - (c[2].y - c[1].y) * (c[0].x - c[1].x);
+        if (area < 0.0f) {
+            return;
+        }
+        count = n;
     }
-
-    HVERT *dst;
-    PRIM *p = AddPrim(type, count, FaceKey(vb, n), &dst);
-    if (!p) {
-        return;
-    }
-    p->tex = tex;
-    memcpy(dst, tmp, count * sizeof(HVERT));
+    EmitFace(type, c, count, FaceKey(vb, n), tex);
 }
 
 const int16_t *HWR_InsertObjectG3(const int16_t *obj_ptr, int32_t number)
@@ -500,7 +591,11 @@ void HWR_DrawTranslucentQuad(int32_t x1, int32_t y1, int32_t x2, int32_t y2)
 
 void HWR_PrintShadow(PHD_VBUF *vbufs, int clip, int vertex_count)
 {
+    if (vertex_count > MAX_CVERTS - 4) {
+        return;
+    }
     int32_t key = 0;
+    CVERT c[MAX_CVERTS];
     for (int32_t i = 0; i < vertex_count; i++) {
         if (vbufs[i].clip < 0) {
             return;
@@ -508,35 +603,28 @@ void HWR_PrintShadow(PHD_VBUF *vbufs, int clip, int vertex_count)
         if (vbufs[i].zv > key) {
             key = vbufs[i].zv;
         }
+        SetVert(&c[i], &vbufs[i], NULL);
     }
-    HVERT *v;
-    PRIM *p = AddPrim(PRIM_TRANS, vertex_count, key >> W2V_SHIFT, &v);
-    if (!p) {
-        return;
-    }
-    for (int32_t i = 0; i < vertex_count; i++) {
-        v[i].x = vbufs[i].xs;
-        v[i].y = vbufs[i].ys;
-    }
+    EmitFace(PRIM_TRANS, c, vertex_count, key >> W2V_SHIFT, 0);
 }
 
 void HWR_DrawLightningSegment(
     int x1, int y1, int z1, int thickness1, int x2, int y2, int z2,
     int thickness2)
 {
-    HVERT *v;
-    PRIM *p = AddPrim(PRIM_LIGHTNING, 4, ((z1 + z2) / 2) >> W2V_SHIFT, &v);
-    if (!p) {
-        return;
+    CVERT c[MAX_CVERTS] = { 0 };
+    c[0].x = x1;
+    c[0].y = y1;
+    c[1].x = x1 + thickness1;
+    c[1].y = y1;
+    c[2].x = x2 + thickness2;
+    c[2].y = y2;
+    c[3].x = x2;
+    c[3].y = y2;
+    for (int i = 0; i < 4; i++) {
+        c[i].iz = 1.0f;
     }
-    v[0].x = x1;
-    v[0].y = y1;
-    v[1].x = x1 + thickness1;
-    v[1].y = y1;
-    v[2].x = x2 + thickness2;
-    v[2].y = y2;
-    v[3].x = x2;
-    v[3].y = y2;
+    EmitFace(PRIM_LIGHTNING, c, 4, ((z1 + z2) / 2) >> W2V_SHIFT, 0);
 }
 
 // ---------------------------------------------------------------------
@@ -580,7 +668,7 @@ static void ScanEdge(const HVERT *a, const HVERT *b, bool textured)
     if (ye - 1 > m_RowMax) {
         m_RowMax = ye - 1;
     }
-    int32_t dx = ((b->x - a->x) << 16) / dy;
+    int32_t dx = (int32_t)(((int64_t)(b->x - a->x) << 16) / dy);
     int32_t x = (a->x << 16) + dx * (ys - y0) + 0x8000;
     int32_t dg = ((b->g - a->g) << 16) / dy;
     int32_t g = (a->g << 16) + dg * (ys - y0);

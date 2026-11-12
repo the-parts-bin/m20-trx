@@ -1,5 +1,7 @@
 #include "game/camera.h"
 
+extern int M20_CamTest;
+
 #include "3dsystem/3d_gen.h"
 #include "3dsystem/phd_math.h"
 #include "game/cinema.h"
@@ -96,6 +98,29 @@ void MoveCamera(GAME_VECTOR *ideal, int32_t speed)
         Camera.shift = ceiling - Camera.pos.y;
     } else {
         Camera.shift = 0;
+    }
+
+    // m20: the test harness's camera test (M20_CAMTEST): every frame from a
+    // random point in a random room, looking in a random direction, mostly
+    // level and often low (floors seen edge on: the renderer's hard cases)
+    if (M20_CamTest) {
+        static uint32_t seed = 12345;
+#define M20_RND(n) ((seed = seed * 1103515245u + 12345u), (int32_t)((seed >> 8) % (uint32_t)(n)))
+        int16_t rn = M20_RND(RoomCount);
+        ROOM_INFO *r = &RoomInfo[rn];
+        if (r->x_size > 2 && r->y_size > 2) {
+            Camera.pos.x = r->x + 1024 + M20_RND((r->y_size - 2) * 1024);
+            Camera.pos.z = r->z + 1024 + M20_RND((r->x_size - 2) * 1024);
+            int32_t h = r->min_floor - r->max_ceiling - 128;
+            Camera.pos.y = M20_RND(2) ? r->min_floor - 64 - M20_RND(h > 512 ? 448 : h > 1 ? h : 1)
+                                      : r->max_ceiling + 64 + M20_RND(h > 1 ? h : 1);
+            Camera.pos.room_number = rn;
+            Camera.shift = 0;
+            int32_t a = M20_RND(65536);
+            Camera.target.x = Camera.pos.x + (phd_sin(a) >> 4);
+            Camera.target.z = Camera.pos.z + (phd_cos(a) >> 4);
+            Camera.target.y = Camera.pos.y + M20_RND(512) - 256;
+        }
     }
 
     GetFloor(

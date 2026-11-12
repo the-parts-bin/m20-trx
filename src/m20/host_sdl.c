@@ -33,7 +33,8 @@ static int m_FrameNo;
 static int m_Steps = -1;
 static char m_Shots[4096];
 static const char *m_KeyScript;
-int M20_StartLevel = -1;     // M20_LEVEL: start at this level
+int M20_StartLevel = -1;
+int M20_CamTest;            // M20_CAMTEST=1: the camera at random (game/camera.c)     // M20_LEVEL: start at this level
 uint32_t M20_ScriptKeys;     // read by s_input.c in scripted runs
 bool M20_Scripted;
 
@@ -350,6 +351,9 @@ int main(int argc, char **argv)
     }
     if (getenv("M20_LEVEL")) {
         M20_StartLevel = atoi(getenv("M20_LEVEL"));
+    }
+    if (getenv("M20_CAMTEST")) {
+        M20_CamTest = 1;
     }
     if (getenv("M20_HEADLESS")) {
         m_Headless = true;
