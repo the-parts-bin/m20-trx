@@ -32,6 +32,8 @@
 #include "specific/s_output.h"
 #include "specific/s_shell.h"
 
+extern int M20_StartLevel;
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdio.h>
@@ -55,6 +57,9 @@ static void Shell_CalculateWibbleTable()
 void Shell_Main()
 {
     SoundIsActive = true;
+
+    // m20: the game's memory first, while the heap is in one piece
+    GameBuf_Init();
 
     Log_Init();
     T1MInit();
@@ -109,6 +114,10 @@ void Shell_Main()
     FMV_Play("fmv\\cafe.rpl");
 
     int32_t gf_option = GF_EXIT_TO_TITLE;
+    // m20: the platform can start at a level (the test harness's M20_LEVEL)
+    if (M20_StartLevel >= 0) {
+        gf_option = GF_START_GAME | M20_StartLevel;
+    }
 
     bool loop_continue = true;
     while (loop_continue) {

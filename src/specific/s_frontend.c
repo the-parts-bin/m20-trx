@@ -9,7 +9,9 @@
 #include "global/vars.h"
 #include "specific/s_hwr.h"
 
-#include <dinput.h>
+#include <string.h>
+
+
 
 SG_COL S_Colour(int32_t red, int32_t green, int32_t blue)
 {

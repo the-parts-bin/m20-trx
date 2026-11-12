@@ -33,20 +33,28 @@ bool File_Exists(const char *path)
     return false;
 }
 
+// m20: the game's paths have backslashes, and the files on the CD are upper
+// case: '/' for '\\', and if the path as written isn't there, its upper case
 void File_GetFullPath(const char *path, char **out)
 {
-    if (!File_Exists(path) && File_IsRelative(path)) {
-        const char *game_path = File_GetGameDirectory();
-        if (game_path) {
-            size_t target_size = strlen(game_path) + 1 + strlen(path) + 1;
-            *out = Memory_Alloc(target_size);
-            strcpy(*out, game_path);
-            strcat(*out, "\\");
-            strcat(*out, path);
-            return;
+    size_t n = strlen(path);
+    char *p = Memory_Alloc(n + 1);
+    for (size_t i = 0; i <= n; i++) {
+        p[i] = path[i] == '\\' ? '/' : path[i];
+    }
+    if (!File_Exists(p)) {
+        char *u = Memory_Alloc(n + 1);
+        for (size_t i = 0; i <= n; i++) {
+            u[i] = (p[i] >= 'a' && p[i] <= 'z') ? p[i] - 32 : p[i];
+        }
+        if (File_Exists(u)) {
+            Memory_Free(p);
+            p = u;
+        } else {
+            Memory_Free(u);
         }
     }
-    *out = strdup(path);
+    *out = p;
 }
 
 MYFILE *File_Open(const char *path, FILE_OPEN_MODE mode)

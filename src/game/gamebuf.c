@@ -1,13 +1,23 @@
 #include "game/gamebuf.h"
 
+#include "log.h"
 #include "memory.h"
+
+#include <string.h>
 #include "specific/s_shell.h"
 
+// m20: the game's memory, from the build (the Makefile): the original's 16 MB
+// is TombATI's, far more than a level uses
+#ifdef M20_GAMEBUF
+#define MALLOC_SIZE M20_GAMEBUF
+#else
 #define MALLOC_SIZE 0x1000000 // 16 MB
+#endif
 
 static char *m_GameMemoryPointer = NULL;
 static char *m_GameAllocMemPointer = NULL;
 static size_t m_GameAllocMemFree = 0;
+static size_t m_TypeBytes[64];   // m20: what each buffer type took
 
 static const char *GameBuf_GetBufferName(GAME_BUFFER buffer)
 {
@@ -53,9 +63,36 @@ static const char *GameBuf_GetBufferName(GAME_BUFFER buffer)
 
 void GameBuf_Init()
 {
-    m_GameMemoryPointer = Memory_Alloc(MALLOC_SIZE);
+    // m20: allocated once, reset at each level's load (it was allocated
+    // again at every level, and the last one's never freed)
+    if (!m_GameMemoryPointer) {
+        m_GameMemoryPointer = Memory_Alloc(MALLOC_SIZE);
+    }
     m_GameAllocMemPointer = m_GameMemoryPointer;
     m_GameAllocMemFree = MALLOC_SIZE;
+    memset(m_TypeBytes, 0, sizeof(m_TypeBytes));
+}
+
+// m20: what each buffer type took, to the log
+void GameBuf_LogUse()
+{
+    for (int i = 0; i < 64; i++) {
+        if (m_TypeBytes[i]) {
+            LOG_INFO(
+                "m20: %-28s %7d", GameBuf_GetBufferName(i), (int)m_TypeBytes[i]);
+        }
+    }
+}
+
+// m20: what the level loaded uses
+size_t GameBuf_GetUsed()
+{
+    return MALLOC_SIZE - m_GameAllocMemFree;
+}
+
+size_t GameBuf_GetSize()
+{
+    return MALLOC_SIZE;
 }
 
 void GameBuf_Shutdown()
@@ -76,6 +113,7 @@ void *GameBuf_Alloc(int32_t alloc_size, GAME_BUFFER buffer)
             GameBuf_GetBufferName(buffer), aligned_size);
     }
 
+    m_TypeBytes[buffer & 63] += aligned_size;
     void *result = m_GameAllocMemPointer;
     m_GameAllocMemFree -= aligned_size;
     m_GameAllocMemPointer += aligned_size;

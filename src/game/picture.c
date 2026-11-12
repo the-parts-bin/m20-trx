@@ -5,7 +5,7 @@
 
 PICTURE *Picture_Create(const char *file_path)
 {
-    PICTURE *picture = Memory_Alloc(sizeof(picture));
+    PICTURE *picture = Memory_Alloc(sizeof(PICTURE));
     if (!S_Picture_LoadFromFile(picture, file_path)) {
         Memory_Free(picture);
         return NULL;

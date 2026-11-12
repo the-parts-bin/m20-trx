@@ -1,6 +1,8 @@
 #ifndef T1M_MEMORY_H
 #define T1M_MEMORY_H
 
+#include <stddef.h>
+
 // Basic memory utilities that exit the game in case the system runs out of
 // memory.
 

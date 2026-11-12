@@ -1,6 +1,7 @@
 #ifndef T1M_GAME_GAMEBUF_H
 #define T1M_GAME_GAMEBUF_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Internal game memory manager. It allocates its internal buffer once per
@@ -49,5 +50,8 @@ typedef enum GAME_BUFFER {
 void GameBuf_Init();
 void *GameBuf_Alloc(int32_t alloc_size, GAME_BUFFER buffer);
 void GameBuf_Shutdown();
+size_t GameBuf_GetUsed();
+size_t GameBuf_GetSize();
+void GameBuf_LogUse();
 
 #endif

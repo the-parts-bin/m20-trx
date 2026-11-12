@@ -136,6 +136,13 @@ static bool Level_LoadFromFile(const char *filename, int32_t level_num)
 
     HWR_DownloadTextures(m_TexturePageCount);
 
+    // m20: what it takes
+    LOG_INFO(
+        "m20: level %d (%s): game buffer %d KB of %d KB", level_num, filename,
+        (int)(GameBuf_GetUsed() >> 10), (int)(GameBuf_GetSize() >> 10));
+    GameBuf_LogUse();
+    S_Shell_ReportMemory(filename);
+
     return true;
 }
 

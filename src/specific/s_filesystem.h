@@ -2,6 +2,7 @@
 #define T1M_SPECIFIC_S_FILESYSTEM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 size_t S_File_GetMaxPath();

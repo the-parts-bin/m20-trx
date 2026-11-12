@@ -1,32 +1,42 @@
+// m20: the sound effects, mixed in software (in place of DirectSound's
+// buffers): the platform asks S_Sound_Mix for signed 16-bit stereo at
+// M20_AUDIO_RATE. The samples stay where the level loaded them (WAVE data
+// in the game's memory); a channel plays one at its rate times the pitch,
+// with DirectSound's volume and pan curves (TombATI's decibel table) as two
+// linear gains.
 #include "specific/s_sound.h"
 
 #include "global/vars.h"
-#include "global/vars_platform.h"
 #include "log.h"
+#include "m20/m20_platform.h"
 #include "memory.h"
 #include "specific/s_shell.h"
 
 #include <math.h>
+#include <string.h>
 
 #define DECIBEL_LUT_SIZE 512
+#define NUM_CHANNELS 32
+
+void M20_AudioLock(bool lock);
 
 typedef struct SAMPLE_DATA {
-    char *data;
-    int32_t length;
+    const char *data;
+    int32_t length;     // frames
     int16_t bits_per_sample;
     int16_t channels;
-    int16_t sample_rate;
-    int16_t block_align;
-    int16_t volume;
-    int32_t pan;
-    void *handle;
+    int32_t sample_rate;
 } SAMPLE_DATA;
 
-typedef struct DUPE_SOUND_BUFFER {
-    SAMPLE_DATA *sample;
-    LPDIRECTSOUNDBUFFER buffer;
-    struct DUPE_SOUND_BUFFER *next;
-} DUPE_SOUND_BUFFER;
+typedef struct CHANNEL {
+    const SAMPLE_DATA *sample;
+    uint32_t pos;       // frame, 16.16
+    uint32_t step;
+    int32_t gain_l;     // 0 .. 4096
+    int32_t gain_r;
+    bool loop;
+    volatile bool playing;
+} CHANNEL;
 
 #pragma pack(push, 1)
 typedef struct WAVE_FORMAT_CHUNK {
@@ -43,7 +53,6 @@ typedef struct WAVE_FORMAT_CHUNK {
 typedef struct WAVE_DATA_CHUNK {
     char subchunk_id[4];
     int32_t subchunk_size;
-    // data
 } WAVE_DATA_CHUNK;
 
 typedef struct WAVE_FILE_HEADER {
@@ -55,258 +64,44 @@ typedef struct WAVE_FILE_HEADER {
 } WAVE_FILE_HEADER;
 #pragma pack(pop)
 
-static LPDIRECTSOUND m_DSound = NULL;
-
 static int32_t m_NumSampleData = 0;
-static SAMPLE_DATA **m_SampleData = 0;
-static DUPE_SOUND_BUFFER *m_DupeBuffers = NULL;
-static int32_t m_DecibleLUT[DECIBEL_LUT_SIZE] = { 0 };
+static SAMPLE_DATA *m_SampleData = NULL;
+static CHANNEL m_Channels[NUM_CHANNELS];
+static uint16_t m_GainLUT[DECIBEL_LUT_SIZE];   // 4096 = 1.0
+static bool m_Ready;
 
-static int32_t S_Sound_ConvertVolumeToDecibel(int32_t volume);
-static int32_t S_Sound_ConvertPanToDecibel(uint16_t pan);
-static SAMPLE_DATA *S_Sound_LoadSample(char *content);
-static bool S_Sound_MakeSample(SAMPLE_DATA *sample_data);
-
-static int32_t S_Sound_ConvertVolumeToDecibel(int32_t volume)
+// TombATI's decibels (hundredths): -9000 + 1000 log2(i), as a linear gain
+static void BuildGainLUT()
 {
-    return m_DecibleLUT[(volume & 0x7FFF) >> 6];
-}
-
-static int32_t S_Sound_ConvertPanToDecibel(uint16_t pan)
-{
-    int32_t result = sin((pan / 32767.0) * M_PI) * (DECIBEL_LUT_SIZE / 2);
-    if (result > 0) {
-        return -m_DecibleLUT[DECIBEL_LUT_SIZE - result];
-    } else if (result < 0) {
-        return m_DecibleLUT[DECIBEL_LUT_SIZE + result];
-    } else {
-        return 0;
+    m_GainLUT[0] = 0;
+    for (int i = 1; i < DECIBEL_LUT_SIZE; i++) {
+        double db = -9000.0 + 1000.0 * log2((double)i);
+        double g = pow(10.0, db / 2000.0) * 4096.0;
+        m_GainLUT[i] = g > 4096.0 ? 4096 : (uint16_t)g;
     }
 }
 
-static SAMPLE_DATA *S_Sound_LoadSample(char *content)
+static void SetGains(CHANNEL *ch, int32_t volume, uint16_t pan)
 {
-    WAVE_FILE_HEADER *hdr = (WAVE_FILE_HEADER *)content;
-    if (strncmp(hdr->chunk_id, "RIFF", 4)) {
-        S_Shell_ExitSystem("Samples must be in WAVE format.");
-        return NULL;
+    int32_t g = m_GainLUT[(volume & 0x7FFF) >> 6];
+    int32_t p = sin((pan / 32767.0) * M_PI) * (DECIBEL_LUT_SIZE / 2);
+    int32_t l = g, r = g;
+    if (p > 0) {
+        l = l * m_GainLUT[DECIBEL_LUT_SIZE - p] >> 12;
+    } else if (p < 0) {
+        r = r * m_GainLUT[DECIBEL_LUT_SIZE + p] >> 12;
     }
-
-    SAMPLE_DATA *sample_data = Memory_Alloc(sizeof(SAMPLE_DATA));
-    sample_data->data = content + sizeof(WAVE_FILE_HEADER);
-    sample_data->length =
-        hdr->data_chunk.subchunk_size - sizeof(WAVE_FILE_HEADER);
-    sample_data->bits_per_sample = hdr->fmt_chunk.bits_per_sample;
-    sample_data->channels = hdr->fmt_chunk.num_channels;
-    sample_data->block_align =
-        sample_data->channels * hdr->fmt_chunk.bits_per_sample / 8;
-    sample_data->sample_rate = hdr->fmt_chunk.sample_rate;
-
-    sample_data->pan = 0;
-    sample_data->volume = 0x7FFF;
-    if (S_Sound_MakeSample(sample_data)) {
-        return sample_data;
-    }
-    return NULL;
-}
-
-static bool S_Sound_MakeSample(SAMPLE_DATA *sample_data)
-{
-    WAVEFORMATEX wave_format;
-    wave_format.wFormatTag = WAVE_FORMAT_PCM;
-    wave_format.nChannels = sample_data->channels;
-    wave_format.nSamplesPerSec = sample_data->sample_rate;
-    wave_format.nAvgBytesPerSec =
-        sample_data->sample_rate * sample_data->block_align;
-    wave_format.nBlockAlign = sample_data->block_align;
-    wave_format.wBitsPerSample = sample_data->bits_per_sample;
-
-    DSBUFFERDESC buffer_desc;
-    buffer_desc.dwSize = sizeof(DSBUFFERDESC);
-    buffer_desc.dwFlags = DSBCAPS_STATIC | DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLPAN
-        | DSBCAPS_CTRLFREQUENCY;
-    buffer_desc.dwBufferBytes = sample_data->length;
-    buffer_desc.dwReserved = 0;
-    buffer_desc.lpwfxFormat = &wave_format;
-    CLAMP(buffer_desc.dwBufferBytes, DSBSIZE_MIN, DSBSIZE_MAX);
-
-    HRESULT result = IDirectSound_CreateSoundBuffer(
-        m_DSound, &buffer_desc, (LPLPDIRECTSOUNDBUFFER)&sample_data->handle, 0);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSound_CreateSoundBuffer: 0x%lx",
-            result);
-        S_Shell_ExitSystem("Fatal DirectSound error!");
-    }
-
-    DWORD audio_data_size;
-    LPVOID audio_data;
-
-    result = IDirectSoundBuffer_Lock(
-        (LPDIRECTSOUNDBUFFER)sample_data->handle, 0, buffer_desc.dwBufferBytes,
-        &audio_data, &audio_data_size, 0, 0, 0);
-    if (result != DS_OK) {
-        LOG_ERROR("Error while calling IDirectSoundBuffer_Lock: 0x%lx", result);
-        S_Shell_ExitSystem("Fatal DirectSound error!");
-    }
-
-    memcpy(audio_data, sample_data->data, buffer_desc.dwBufferBytes);
-
-    result = IDirectSoundBuffer_Unlock(
-        (LPDIRECTSOUNDBUFFER)sample_data->handle, audio_data, audio_data_size,
-        0, 0);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_Unlock: 0x%lx", result);
-        S_Shell_ExitSystem("Fatal DirectSound error!");
-    }
-
-    return true;
-}
-
-void *S_Sound_PlaySample(
-    int32_t sample_id, int32_t volume, int16_t pitch, uint16_t pan, bool loop)
-{
-    if (!SoundIsActive) {
-        return NULL;
-    }
-
-    SAMPLE_DATA *sample = m_SampleData[sample_id];
-    if (!sample) {
-        return NULL;
-    }
-
-    LPDIRECTSOUNDBUFFER buffer = (LPDIRECTSOUNDBUFFER)sample->handle;
-
-    // check if the buffer is already playing
-    DWORD status;
-    HRESULT result = IDirectSoundBuffer_GetStatus(
-        (LPDIRECTSOUNDBUFFER)sample->handle, &status);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_GetStatus: 0x%lx", result);
-        return NULL;
-    }
-
-    if (status == DSBSTATUS_PLAYING) {
-        buffer = NULL;
-
-        for (DUPE_SOUND_BUFFER *dupe_buffer = m_DupeBuffers;
-             dupe_buffer != NULL; dupe_buffer = dupe_buffer->next) {
-            if (dupe_buffer->sample == sample) {
-                result =
-                    IDirectSoundBuffer_GetStatus(dupe_buffer->buffer, &status);
-                if (result != DS_OK) {
-                    LOG_ERROR(
-                        "Error while calling IDirectSoundBuffer_GetStatus: "
-                        "0x%lx",
-                        result);
-                    continue;
-                }
-                if (status != DSBSTATUS_PLAYING) {
-                    buffer = dupe_buffer->buffer;
-                    break;
-                }
-            }
-        }
-
-        if (!buffer) {
-            LPDIRECTSOUNDBUFFER buffer_new;
-            result = IDirectSound8_DuplicateSoundBuffer(
-                m_DSound, (LPDIRECTSOUNDBUFFER)sample->handle, &buffer_new);
-            if (result != DS_OK) {
-                LOG_ERROR(
-                    "Error while calling IDirectSound8_DuplicateSoundBuffer: "
-                    "0x%lx",
-                    result);
-                return NULL;
-            }
-
-            DUPE_SOUND_BUFFER *dupe_buffer =
-                Memory_Alloc(sizeof(DUPE_SOUND_BUFFER));
-            dupe_buffer->buffer = buffer_new;
-            dupe_buffer->next = m_DupeBuffers;
-            m_DupeBuffers = dupe_buffer;
-
-            buffer = buffer_new;
-            LOG_DEBUG(
-                "duplicated sound buffer %p to %p", sample->handle, buffer_new);
-        }
-    }
-
-    // calculate pitch from sample rate
-    int32_t ds_pitch = sample->sample_rate;
-    if (pitch != -1) {
-        ds_pitch = ds_pitch * pitch / 100;
-    }
-
-    result = IDirectSoundBuffer_SetFrequency(buffer, ds_pitch);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetFrequency: 0x%lx",
-            result);
-        return NULL;
-    }
-    result =
-        IDirectSoundBuffer_SetPan(buffer, S_Sound_ConvertPanToDecibel(pan));
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetPan: 0x%lx", result);
-        return NULL;
-    }
-    result = IDirectSoundBuffer_SetVolume(
-        buffer, S_Sound_ConvertVolumeToDecibel(volume));
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetVolume: 0x%lx", result);
-        return NULL;
-    }
-    result = IDirectSoundBuffer_SetCurrentPosition(buffer, 0);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetCurrentPosition: 0x%lx",
-            result);
-        return NULL;
-    }
-    result = IDirectSoundBuffer_Play(buffer, 0, 0, loop ? DSBPLAY_LOOPING : 0);
-    if (result != DS_OK) {
-        LOG_ERROR("Error while calling IDirectSoundBuffer_Play: 0x%lx", result);
-        return NULL;
-    }
-    return buffer;
+    ch->gain_l = l;
+    ch->gain_r = r;
 }
 
 bool S_Sound_Init()
 {
-    HRESULT result = DirectSoundCreate(0, &m_DSound, 0);
-    if (result != DS_OK) {
-        LOG_ERROR("Error while calling DirectSoundCreate: 0x%lx", result);
-        return false;
-    }
-    result = m_DSound->lpVtbl->SetCooperativeLevel(m_DSound, TombHWND, 1);
-    if (result != DS_OK) {
-        LOG_ERROR("Error while calling SetCooperativeLevel: 0x%lx", result);
-        return false;
-    }
-    m_DecibleLUT[0] = -10000;
-    for (int i = 1; i < DECIBEL_LUT_SIZE; i++) {
-        m_DecibleLUT[i] = -9000.0 - log2(1.0 / i) * -1000.0 / log2(0.5);
-    }
+    BuildGainLUT();
+    memset(m_Channels, 0, sizeof(m_Channels));
+    m_Ready = true;
+    M20_AudioInit();
     return true;
-}
-
-void S_Sound_StopAllSamples()
-{
-    if (!SoundIsActive) {
-        return;
-    }
-
-    for (int i = 0; i < m_NumSampleData; i++) {
-        SAMPLE_DATA *sample = m_SampleData[i];
-        if (sample) {
-            S_Sound_StopSample(sample->handle);
-        }
-    }
 }
 
 void S_Sound_LoadSamples(char **sample_pointers, int32_t num_samples)
@@ -314,68 +109,139 @@ void S_Sound_LoadSamples(char **sample_pointers, int32_t num_samples)
     if (!SoundIsActive) {
         return;
     }
-
-    m_NumSampleData = num_samples;
-    m_SampleData = Memory_Alloc(sizeof(SAMPLE_DATA *) * num_samples);
-    for (int i = 0; i < m_NumSampleData; i++) {
-        m_SampleData[i] = S_Sound_LoadSample(sample_pointers[i]);
+    M20_AudioLock(true);
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        m_Channels[i].playing = false;
     }
+    M20_AudioLock(false);
+    if (m_SampleData) {
+        Memory_Free(m_SampleData);
+    }
+    m_NumSampleData = num_samples;
+    m_SampleData = Memory_Alloc(sizeof(SAMPLE_DATA) * num_samples);
+    for (int i = 0; i < num_samples; i++) {
+        const WAVE_FILE_HEADER *hdr = (const WAVE_FILE_HEADER *)sample_pointers[i];
+        if (strncmp(hdr->chunk_id, "RIFF", 4)) {
+            S_Shell_ExitSystem("Samples must be in WAVE format.");
+        }
+        SAMPLE_DATA *s = &m_SampleData[i];
+        s->data = sample_pointers[i] + sizeof(WAVE_FILE_HEADER);
+        s->bits_per_sample = hdr->fmt_chunk.bits_per_sample;
+        s->channels = hdr->fmt_chunk.num_channels;
+        s->sample_rate = hdr->fmt_chunk.sample_rate;
+        // TombATI's length (the data chunk's size less the header's)
+        int32_t bytes = hdr->data_chunk.subchunk_size - sizeof(WAVE_FILE_HEADER);
+        int32_t align = s->channels * s->bits_per_sample / 8;
+        s->length = bytes > 0 && align > 0 ? bytes / align : 0;
+    }
+}
+
+void *S_Sound_PlaySample(
+    int32_t sample_id, int32_t volume, int16_t pitch, uint16_t pan, bool loop)
+{
+    if (!SoundIsActive || !m_Ready || sample_id < 0
+        || sample_id >= m_NumSampleData) {
+        return NULL;
+    }
+    const SAMPLE_DATA *s = &m_SampleData[sample_id];
+    if (!s->length) {
+        return NULL;
+    }
+    CHANNEL *ch = NULL;
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        if (!m_Channels[i].playing) {
+            ch = &m_Channels[i];
+            break;
+        }
+    }
+    if (!ch) {
+        return NULL;
+    }
+    int32_t rate = s->sample_rate;
+    if (pitch != -1) {
+        rate = rate * pitch / 100;
+    }
+    M20_AudioLock(true);
+    ch->sample = s;
+    ch->pos = 0;
+    ch->step = (uint32_t)(((uint64_t)rate << 16) / M20_AUDIO_RATE);
+    ch->loop = loop;
+    SetGains(ch, volume, pan);
+    ch->playing = true;
+    M20_AudioLock(false);
+    return ch;
+}
+
+bool S_Sound_SampleIsPlaying(void *handle)
+{
+    return SoundIsActive && handle && ((CHANNEL *)handle)->playing;
+}
+
+void S_Sound_StopAllSamples()
+{
+    M20_AudioLock(true);
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+        m_Channels[i].playing = false;
+    }
+    M20_AudioLock(false);
 }
 
 void S_Sound_StopSample(void *handle)
 {
-    if (!SoundIsActive) {
-        return;
-    }
-    if (!handle) {
-        return;
-    }
-    LPDIRECTSOUNDBUFFER buffer = (LPDIRECTSOUNDBUFFER)handle;
-    HRESULT result = IDirectSoundBuffer_Stop(buffer);
-    if (result != DS_OK) {
-        LOG_ERROR("Error while calling IDirectSoundBuffer_Stop: 0x%lx", result);
+    if (handle) {
+        ((CHANNEL *)handle)->playing = false;
     }
 }
 
 void S_Sound_SetPanAndVolume(void *handle, int16_t pan, int16_t volume)
 {
-    if (!SoundIsActive) {
+    if (!SoundIsActive || !handle) {
         return;
     }
-    if (!handle) {
-        return;
-    }
-    LPDIRECTSOUNDBUFFER buffer = (LPDIRECTSOUNDBUFFER)handle;
-    HRESULT result;
-    result = IDirectSoundBuffer_SetVolume(
-        buffer, S_Sound_ConvertVolumeToDecibel(volume));
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetVolume: 0x%lx", result);
-    }
-    result =
-        IDirectSoundBuffer_SetPan(buffer, S_Sound_ConvertPanToDecibel(pan));
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_SetPan: 0x%lx", result);
-    }
+    M20_AudioLock(true);
+    SetGains((CHANNEL *)handle, volume, pan);
+    M20_AudioLock(false);
 }
 
-bool S_Sound_SampleIsPlaying(void *handle)
+// The mix: frames of stereo, signed 16-bit
+void S_Sound_Mix(int16_t *out, int frames)
 {
-    if (!SoundIsActive) {
-        return false;
+    static int32_t acc[2 * 1024];
+    while (frames > 0) {
+        int n = frames > 1024 ? 1024 : frames;
+        memset(acc, 0, n * 2 * sizeof(int32_t));
+        for (int c = 0; c < NUM_CHANNELS; c++) {
+            CHANNEL *ch = &m_Channels[c];
+            if (!ch->playing) {
+                continue;
+            }
+            const SAMPLE_DATA *s = ch->sample;
+            uint32_t len = (uint32_t)s->length << 16;
+            for (int i = 0; i < n; i++) {
+                if (ch->pos >= len) {
+                    if (!ch->loop) {
+                        ch->playing = false;
+                        break;
+                    }
+                    ch->pos -= len;
+                }
+                uint32_t f = ch->pos >> 16;
+                int32_t v;
+                if (s->bits_per_sample == 16) {
+                    v = ((const int16_t *)s->data)[f * s->channels];
+                } else {
+                    v = ((int32_t)(uint8_t)s->data[f * s->channels] - 128) << 8;
+                }
+                acc[2 * i] += v * ch->gain_l >> 12;
+                acc[2 * i + 1] += v * ch->gain_r >> 12;
+                ch->pos += ch->step;
+            }
+        }
+        for (int i = 0; i < 2 * n; i++) {
+            int32_t v = acc[i];
+            out[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+        }
+        out += 2 * n;
+        frames -= n;
     }
-    if (!handle) {
-        return false;
-    }
-    LPDIRECTSOUNDBUFFER buffer = (LPDIRECTSOUNDBUFFER)handle;
-    DWORD status;
-    HRESULT result = IDirectSoundBuffer_GetStatus(buffer, &status);
-    if (result != DS_OK) {
-        LOG_ERROR(
-            "Error while calling IDirectSoundBuffer_GetStatus: 0x%lx", result);
-        return false;
-    }
-    return status == DSBSTATUS_PLAYING;
 }

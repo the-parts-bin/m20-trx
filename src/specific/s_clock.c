@@ -1,52 +1,52 @@
+// m20: the clock, from the platform's microseconds
 #include "specific/s_clock.h"
 
 #include "global/vars.h"
+#include "m20/m20_platform.h"
 
-#include <windows.h>
+#define US_PER_TICK (1000000 / TICKS_PER_SECOND)
 
-static LONGLONG m_Ticks = 0;
-static double m_Frequency = 0.0;
-
-static void m_UpdateTicks();
-
-static void m_UpdateTicks()
-{
-    LARGE_INTEGER counter;
-    QueryPerformanceCounter(&counter);
-    m_Ticks = counter.QuadPart;
-}
+static uint32_t m_Last;
+static uint32_t m_Frac;     // microseconds not yet counted as ticks
 
 bool S_Clock_Init()
 {
-    LARGE_INTEGER ticks_per_second;
-    if (!QueryPerformanceFrequency(&ticks_per_second)) {
-        return false;
-    }
-
-    m_Frequency = (double)ticks_per_second.QuadPart / (double)TICKS_PER_SECOND;
-    m_UpdateTicks();
+    m_Last = M20_TimeUs();
+    m_Frac = 0;
     return true;
 }
 
 int32_t S_Clock_GetMS()
 {
-    return GetTickCount();
+    return M20_TimeUs() / 1000;
 }
+
+extern bool M20_Scripted;
 
 int32_t S_Clock_Sync()
 {
-    LONGLONG last_ticks = m_Ticks;
-    m_UpdateTicks();
-    return ((double)(m_Ticks - last_ticks) / m_Frequency);
+    if (M20_Scripted) {
+        return TICKS_PER_FRAME;   // the harness's scripted runs: one frame a frame
+    }
+    uint32_t now = M20_TimeUs();
+    m_Frac += now - m_Last;
+    m_Last = now;
+    int32_t ticks = m_Frac / US_PER_TICK;
+    m_Frac -= ticks * US_PER_TICK;
+    return ticks;
 }
 
 int32_t S_Clock_SyncTicks(int32_t target)
 {
-    double elapsed = 0.0;
-    LONGLONG last_ticks = m_Ticks;
+    if (M20_Scripted) {
+        return target;
+    }
+    int32_t elapsed = 0;
     do {
-        m_UpdateTicks();
-        elapsed = (double)(m_Ticks - last_ticks) / m_Frequency;
-    } while (elapsed < (double)target);
+        elapsed += S_Clock_Sync();
+        if (elapsed < target) {
+            M20_PollInput();
+        }
+    } while (elapsed < target);
     return elapsed;
 }

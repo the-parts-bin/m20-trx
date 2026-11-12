@@ -615,11 +615,15 @@ void phd_PutPolygons(const int16_t *obj_ptr, int clip)
     }
 }
 
+extern bool HWR_RoomMode;
+
 void S_InsertRoom(const int16_t *obj_ptr)
 {
     obj_ptr = calc_roomvert(obj_ptr);
+    HWR_RoomMode = true;   // m20: room faces sort by their farthest vertex
     obj_ptr = HWR_InsertObjectGT4(obj_ptr + 1, *obj_ptr);
     obj_ptr = HWR_InsertObjectGT3(obj_ptr + 1, *obj_ptr);
+    HWR_RoomMode = false;
     obj_ptr = S_DrawRoomSprites(obj_ptr + 1, *obj_ptr);
 }
 

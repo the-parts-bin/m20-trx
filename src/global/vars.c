@@ -14,6 +14,7 @@
 #include "game/effects/stairs2slope.h"
 #include "game/effects/turn_180.h"
 #include "global/vars.h"
+#include "m20/m20_platform.h"
 
 char *GameMemoryPointer = NULL;
 int32_t FPSCounter = 0;
@@ -127,8 +128,10 @@ int32_t LsAdder = 0;
 int32_t LsDivider = 0;
 SHADOW_INFO ShadowInfo = { 0 };
 
+// m20: every entry is the build's frame (src/m20/m20_platform.h)
 HWR_Resolution AvailableResolutions[RESOLUTIONS_SIZE] = {
-    { 320, 200 },   { 512, 384 },   { 640, 480 },   { 800, 600 },
-    { 1024, 768 },  { 1280, 720 },  { 1920, 1080 }, { 2560, 1440 },
-    { 3840, 2160 }, { 4096, 2160 }, { 7680, 4320 }, { -1, -1 },
+#define M20_RES { M20_W, M20_H }
+    M20_RES, M20_RES, M20_RES, M20_RES, M20_RES, M20_RES,
+    M20_RES, M20_RES, M20_RES, M20_RES, M20_RES, M20_RES,
+#undef M20_RES
 };

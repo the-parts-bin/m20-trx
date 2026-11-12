@@ -1,4 +1,5 @@
 {
+    // m20: the original game's behaviour: the new features off
     // Disables healing Lara between level reloads (for No Heal challenge runs).
     "disable_healing_between_levels": false,
 
@@ -15,14 +16,14 @@
     "disable_shotgun": false,
 
     // Enables showing healthbar for the active enemy.
-    "enable_enemy_healthbar": true,
+    "enable_enemy_healthbar": false,
 
     // Allows the player to look while running, jumping etc.
     // (similar to TR2 style).
-    "enable_enhanced_look": true,
+    "enable_enhanced_look": false,
 
     // Draws flame when firing a shotgun, like for other guns.
-    "enable_shotgun_flash": true,
+    "enable_shotgun_flash": false,
 
     // Enables quick weapon draws and medpack usage.
     // - 1: draw pistols
@@ -35,7 +36,7 @@
 
     // Enables TR3+ style sidesteps, e.g. shift+directional arrows (you still
     // can use dedicated sidestep buttons).
-    "enable_tr3_sidesteps": true,
+    "enable_tr3_sidesteps": false,
 
     // Enables various cheats:
     // - F11: heal Lara. Hold WALK key to hurt instead.
@@ -51,14 +52,14 @@
     "enable_braid": false,
 
     // Enables showing level stats when selecting compass.
-    "enable_compass_stats": true,
+    "enable_compass_stats": false,
 
     // Makes the ingame timer work even while the game is showing the
     // inventory.
-    "enable_timer_in_inventory": true,
+    "enable_timer_in_inventory": false,
 
     // Makes the healthbar and airbar use smooth color transitions.
-    "enable_smooth_bars": true,
+    "enable_smooth_bars": false,
 
     // Changes how the healthbar is displayed. Possible values:
     // - always: always show the healthbar
@@ -69,7 +70,7 @@
     // - flashing-only: show the healthbar *only* when Lara's health is 20% or
     //   below (useful for challenge runs)
     // - never: never display the healthbar (for challenge runs)
-    "healthbar_showing_mode": "flashing-or-default",
+    "healthbar_showing_mode": "default",
 
     // Location where the healthbar is displayed. Possible values:
     // - top-left
@@ -119,13 +120,13 @@
 
     // Disables the secret sound incorrectly playing during using the golden
     // key in Tomb of Tihocan.
-    "fix_tihocan_secret_sound": true,
+    "fix_tihocan_secret_sound": false,
 
     // Fixes the secret trigger in the final level not working.
-    "fix_pyramid_secret_trigger": true,
+    "fix_pyramid_secret_trigger": false,
 
     // Fixes the sound of collecting a secret resetting the active music track.
-    "fix_secrets_killing_music": true,
+    "fix_secrets_killing_music": false,
 
     // Fixes sidestepping and walking backwards on breakable tiles
     // causing Lara to immediately descend down to the tile underneath.
@@ -172,8 +173,8 @@
     "enable_xbox_one_controller": false,
 
     // Enables round shadow instead of the default octagon one.
-    "enable_round_shadow": true,
+    "enable_round_shadow": false,
 
     // Enables 3D models to be rendered in place of the sprites for pickup items
-    "enable_3d_pickups" : true,
+    "enable_3d_pickups" : false,
 }
