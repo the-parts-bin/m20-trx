@@ -33,8 +33,8 @@ static int m_FrameNo;
 static int m_Steps = -1;
 static char m_Shots[4096];
 static const char *m_KeyScript;
-int M20_StartLevel = -1;
-int M20_CamTest;            // M20_CAMTEST=1: the camera at random (game/camera.c)     // M20_LEVEL: start at this level
+int M20_StartLevel = -1;     // M20_LEVEL: start at this level
+int M20_CamTest;            // M20_CAMTEST=1: the camera at random (game/camera.c)
 uint32_t M20_ScriptKeys;     // read by s_input.c in scripted runs
 bool M20_Scripted;
 
@@ -291,6 +291,8 @@ void M20_Fatal(const char *message)
 // ---------------------------------------------------------------------
 // Sound
 // ---------------------------------------------------------------------
+static SDL_AudioDeviceID m_AudioDev;   // 0: no sound
+
 static void audio_callback(void *user, Uint8 *stream, int len)
 {
     S_Sound_Mix((int16_t *)stream, len / 4);
@@ -307,9 +309,9 @@ void M20_AudioInit(void)
     want.channels = 2;
     want.samples = 1024;
     want.callback = audio_callback;
-    SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (dev) {
-        SDL_PauseAudioDevice(dev, 0);
+    m_AudioDev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (m_AudioDev) {
+        SDL_PauseAudioDevice(m_AudioDev, 0);
     } else {
         fprintf(stderr, "no audio: %s\n", SDL_GetError());
     }
@@ -317,13 +319,15 @@ void M20_AudioInit(void)
 
 void M20_AudioLock(bool lock)
 {
-    if (m_Headless || getenv("M20_NOSOUND")) {
+    // the device's own lock (SDL_LockAudio locks the legacy device 1,
+    // which SDL_OpenAudioDevice never returns)
+    if (!m_AudioDev) {
         return;
     }
     if (lock) {
-        SDL_LockAudio();
+        SDL_LockAudioDevice(m_AudioDev);
     } else {
-        SDL_UnlockAudio();
+        SDL_UnlockAudioDevice(m_AudioDev);
     }
 }
 

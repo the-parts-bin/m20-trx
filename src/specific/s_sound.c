@@ -36,6 +36,7 @@ typedef struct CHANNEL {
     int32_t gain_r;
     bool loop;
     volatile bool playing;
+    uint32_t gen;       // bumped at each play: stale handles miss
 } CHANNEL;
 
 #pragma pack(push, 1)
@@ -69,6 +70,26 @@ static SAMPLE_DATA *m_SampleData = NULL;
 static CHANNEL m_Channels[NUM_CHANNELS];
 static uint16_t m_GainLUT[DECIBEL_LUT_SIZE];   // 4096 = 1.0
 static bool m_Ready;
+static uint32_t m_Gen;
+
+// A handle is the channel's index and its generation, never NULL: the game
+// keeps handles after a one-shot ends, and the channel may then play
+// something else, which a stale handle must not stop or pan.
+static void *MakeHandle(int i, uint32_t gen)
+{
+    return (void *)(uintptr_t)((gen << 6) | (uint32_t)(i + 1));
+}
+
+static CHANNEL *FromHandle(void *handle)
+{
+    uintptr_t h = (uintptr_t)handle;
+    int i = (int)(h & 63) - 1;
+    if (!handle || i < 0 || i >= NUM_CHANNELS) {
+        return NULL;
+    }
+    CHANNEL *ch = &m_Channels[i];
+    return ch->playing && ch->gen == (uint32_t)(h >> 6) ? ch : NULL;
+}
 
 // TombATI's decibels (hundredths): -9000 + 1000 log2(i), as a linear gain
 static void BuildGainLUT()
@@ -147,16 +168,17 @@ void *S_Sound_PlaySample(
     if (!s->length) {
         return NULL;
     }
-    CHANNEL *ch = NULL;
+    int idx = -1;
     for (int i = 0; i < NUM_CHANNELS; i++) {
         if (!m_Channels[i].playing) {
-            ch = &m_Channels[i];
+            idx = i;
             break;
         }
     }
-    if (!ch) {
+    if (idx < 0) {
         return NULL;
     }
+    CHANNEL *ch = &m_Channels[idx];
     int32_t rate = s->sample_rate;
     if (pitch != -1) {
         rate = rate * pitch / 100;
@@ -167,14 +189,22 @@ void *S_Sound_PlaySample(
     ch->step = (uint32_t)(((uint64_t)rate << 16) / M20_AUDIO_RATE);
     ch->loop = loop;
     SetGains(ch, volume, pan);
+    m_Gen = (m_Gen + 1) & 0x3FFFFFF;
+    ch->gen = m_Gen;
     ch->playing = true;
     M20_AudioLock(false);
-    return ch;
+    return MakeHandle(idx, m_Gen);
 }
 
 bool S_Sound_SampleIsPlaying(void *handle)
 {
-    return SoundIsActive && handle && ((CHANNEL *)handle)->playing;
+    if (!SoundIsActive) {
+        return false;
+    }
+    M20_AudioLock(true);
+    bool playing = FromHandle(handle) != NULL;
+    M20_AudioLock(false);
+    return playing;
 }
 
 void S_Sound_StopAllSamples()
@@ -188,9 +218,12 @@ void S_Sound_StopAllSamples()
 
 void S_Sound_StopSample(void *handle)
 {
-    if (handle) {
-        ((CHANNEL *)handle)->playing = false;
+    M20_AudioLock(true);
+    CHANNEL *ch = FromHandle(handle);
+    if (ch) {
+        ch->playing = false;
     }
+    M20_AudioLock(false);
 }
 
 void S_Sound_SetPanAndVolume(void *handle, int16_t pan, int16_t volume)
@@ -199,7 +232,10 @@ void S_Sound_SetPanAndVolume(void *handle, int16_t pan, int16_t volume)
         return;
     }
     M20_AudioLock(true);
-    SetGains((CHANNEL *)handle, volume, pan);
+    CHANNEL *ch = FromHandle(handle);
+    if (ch) {
+        SetGains(ch, volume, pan);
+    }
     M20_AudioLock(false);
 }
 
