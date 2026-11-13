@@ -42,7 +42,8 @@ bool HWR_RoomMode;   // S_InsertRoom's faces (3d_gen.c)
 typedef enum {
     PRIM_GT,        // textured face; tpage, flags: transparent
     PRIM_G,         // flat face; colour index
-    PRIM_SPRITE,    // 2 vertices: corners (x, y, u, v); g the shade
+    PRIM_SPRITE,    // 3 vertices: corners (x, y, u, v), g the shade; the
+                    // window (x, y left top; u, v right bottom)
     PRIM_QUAD2D,    // 4 vertices, u the RGB565 colour of each
     PRIM_LINE2D,    // 2 vertices, u the colour
     PRIM_TRANS,     // half-darkened face (shadows, translucent boxes)
@@ -315,11 +316,17 @@ static int32_t ZedClip(
     return count >= 3 ? count : 0;
 }
 
-// Clipping to the screen, one side at a time (Sutherland-Hodgman): side 0
-// x >= 0, 1 x <= W, 2 y >= 0, 3 y <= H
+// Clipping to the window, one side at a time (Sutherland-Hodgman): side 0
+// x >= left, 1 x <= right, 2 y >= top, 3 y <= bottom. The window is the
+// room's portal bounds (PhdLeft .. PhdBottom, inclusive pixels, set by
+// PrintRooms for the room's faces and objects): the original renderer drew
+// a room only inside the portals it is seen through, and without a z-buffer
+// that is what keeps a neighbouring room's walls from showing through.
+static float m_Win[4];
+
 static int32_t ClipSide(const CVERT *in, int32_t n, CVERT *out, int side)
 {
-    float lim = side == 1 ? (float)M20_W : side == 3 ? (float)M20_H : 0.0f;
+    float lim = m_Win[side];
     int32_t count = 0;
     for (int32_t i = 0; i < n; i++) {
         const CVERT *a = &in[i], *b = &in[(i + 1) % n];
@@ -349,12 +356,30 @@ static int32_t ClipSide(const CVERT *in, int32_t n, CVERT *out, int side)
     return count;
 }
 
+// The current window, in screen coordinates (clamped to the screen)
+static void GetWindow(int32_t *l, int32_t *t, int32_t *r, int32_t *b)
+{
+    *l = PhdLeft < 0 ? 0 : PhdLeft;
+    *t = PhdTop < 0 ? 0 : PhdTop;
+    *r = PhdRight > M20_W - 1 ? M20_W - 1 : PhdRight;
+    *b = PhdBottom > M20_H - 1 ? M20_H - 1 : PhdBottom;
+}
+
 static int32_t ClipScreen(CVERT *v, int32_t n)
 {
+    int32_t l, t, r, b;
+    GetWindow(&l, &t, &r, &b);
+    if (l > r || t > b) {
+        return 0;
+    }
+    m_Win[0] = l;
+    m_Win[1] = r + 1;
+    m_Win[2] = t;
+    m_Win[3] = b + 1;
     bool out = false;
     for (int32_t i = 0; i < n; i++) {
-        if (v[i].x < 0.0f || v[i].x > M20_W || v[i].y < 0.0f
-            || v[i].y > M20_H) {
+        if (v[i].x < m_Win[0] || v[i].x > m_Win[1] || v[i].y < m_Win[2]
+            || v[i].y > m_Win[3]) {
             out = true;
             break;
         }
@@ -513,7 +538,12 @@ void HWR_DrawSprite(
     }
     PHD_SPRITE *sprite = &PhdSpriteInfo[sprnum];
     HVERT *v;
-    PRIM *p = AddPrim(PRIM_SPRITE, 2, z >> W2V_SHIFT, &v);
+    int32_t l, t, r, b;
+    GetWindow(&l, &t, &r, &b);
+    if (x2 <= l || x1 > r || y2 <= t || y1 > b) {
+        return;
+    }
+    PRIM *p = AddPrim(PRIM_SPRITE, 3, z >> W2V_SHIFT, &v);
     if (!p) {
         return;
     }
@@ -530,6 +560,10 @@ void HWR_DrawSprite(
     v[1].v = sprite->height >> 8;
     CLAMP(shade, 0, 0x1FFF);
     v[0].g = shade;
+    v[2].x = l;
+    v[2].y = t;
+    v[2].u = r;
+    v[2].v = b;
 }
 
 static uint16_t Rgb(RGB888 c)
@@ -845,19 +879,20 @@ static void DrawSprite(const PRIM *p)
     int32_t dv = (v[1].v << 16) / sh;
     int32_t x0 = v[0].x, y0 = v[0].y, x1 = v[1].x, y1 = v[1].y;
     int32_t u0 = v[0].u << 8, vv = v[0].v << 8;
-    if (x0 < m_ClipL) {
-        u0 += du * (m_ClipL - x0);
-        x0 = m_ClipL;
+    int32_t cl = v[2].x, ct = v[2].y, cr = v[2].u, cb = v[2].v;
+    if (x0 < cl) {
+        u0 += du * (cl - x0);
+        x0 = cl;
     }
-    if (y0 < m_ClipT) {
-        vv += dv * (m_ClipT - y0);
-        y0 = m_ClipT;
+    if (y0 < ct) {
+        vv += dv * (ct - y0);
+        y0 = ct;
     }
-    if (x1 > m_ClipR + 1) {
-        x1 = m_ClipR + 1;
+    if (x1 > cr + 1) {
+        x1 = cr + 1;
     }
-    if (y1 > m_ClipB + 1) {
-        y1 = m_ClipB + 1;
+    if (y1 > cb + 1) {
+        y1 = cb + 1;
     }
     const uint8_t *tex = (const uint8_t *)TexturePagePtrs[p->tex];
     const uint16_t *shade = (p->water ? m_ShadeWater : m_Shade)[v[0].g >> 8];
