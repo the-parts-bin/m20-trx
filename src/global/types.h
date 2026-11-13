@@ -1879,10 +1879,14 @@ typedef struct SAMPLE_INFO {
 
 #pragma pack(pop)
 
+// m20: the pixels as palette indices, the palette as RGB565 (a third of
+// the memory of RGB888: the start-up picture is decoded with the game's
+// buffer already allocated)
 typedef struct PICTURE {
     int32_t width;
     int32_t height;
-    RGB888 *data;
+    uint8_t *data;
+    uint16_t palette[256];
 } PICTURE;
 
 typedef union INPUT_STATE {

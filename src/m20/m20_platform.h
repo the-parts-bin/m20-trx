@@ -1,7 +1,7 @@
 // The m20 port's platform interface: what the game's specific layer
 // (src/specific/) needs from the machine it runs on. Two implementations:
-// src/m20/host_sdl.c (32-bit x86 Linux, SDL2: the test harness) and, later,
-// the m20 board's.
+// src/m20/host_sdl.c (32-bit x86 Linux, SDL2: the test harness) and
+// src/m20/board.c (the m20 board, M20_BOARD).
 #ifndef T1M_M20_PLATFORM_H
 #define T1M_M20_PLATFORM_H
 
@@ -18,8 +18,11 @@
 // The frame the renderer draws, RGB565, M20_W x M20_H
 extern uint16_t *M20_Frame;
 
-// Shows the frame
+// Shows the frame (M20_Frame may then be another buffer)
 void M20_Present(void);
+
+// The frame last presented (the inventory's background is copied from it)
+extern uint16_t *M20_LastFrame;
 
 // Reads the keyboard into M20_Keys: one byte per HID usage (USB HID usage
 // tables, keyboard page; SDL scancodes are the same numbers), non-zero while
@@ -40,8 +43,13 @@ void M20_Fatal(const char *message);
 
 // Sound output: the mixer (src/specific/s_sound.c) is asked for frames of
 // signed 16-bit stereo at M20_AUDIO_RATE
+#ifdef M20_BOARD
+#define M20_AUDIO_RATE 24000   // (held twice: the HDMI's 48 kHz)
+#else
 #define M20_AUDIO_RATE 22050
+#endif
 void M20_AudioInit(void);
+void M20_AudioLock(bool lock);   // keeps the mixer out while held
 void S_Sound_Mix(int16_t *out, int frames);
 
 // HID usages the port uses

@@ -1468,7 +1468,7 @@ void TriggerNormalCDTrack(int16_t value, int16_t flags, int16_t type)
     }
 }
 
-int GetSecretCount()
+int32_t GetSecretCount()
 {
     int count = 0;
     uint32_t secrets = 0;

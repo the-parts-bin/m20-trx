@@ -18,23 +18,20 @@ static bool m_DecompPCX(const char *pcx, size_t pcx_size, PICTURE *picture)
         return false;
     }
 
-    picture->data =
-        Memory_Alloc(picture->width * picture->height * sizeof(RGB888));
+    picture->data = Memory_Alloc(picture->width * picture->height);
 
-    RGB888 pal[256];
     {
-        const uint8_t *src = (uint8_t *)pcx + pcx_size - sizeof(RGB888) * 256;
-        for (int i = 0; i < 256; i++) {
-            pal[i].r = ((*src++) >> 2) & 0x3F;
-            pal[i].g = ((*src++) >> 2) & 0x3F;
-            pal[i].b = ((*src++) >> 2) & 0x3F;
+        const uint8_t *src = (uint8_t *)pcx + pcx_size - 3 * 256;
+        for (int i = 0; i < 256; i++, src += 3) {
+            picture->palette[i] =
+                (src[0] >> 3) << 11 | (src[1] >> 2) << 5 | src[2] >> 3;
         }
     }
 
     {
         const int32_t stride = picture->width + picture->width % 2;
         const uint8_t *src = (uint8_t *)pcx + sizeof(PCX_HEADER);
-        RGB888 *dst = picture->data;
+        uint8_t *dst = picture->data;
         int32_t x = 0;
         int32_t y = 0;
 
@@ -46,13 +43,16 @@ static bool m_DecompPCX(const char *pcx, size_t pcx_size, PICTURE *picture)
                     if (x < picture->width) {
                         CLAMPG(n, picture->width - x);
                         for (int i = 0; i < n; i++) {
-                            *dst++ = pal[c];
+                            *dst++ = c;
                         }
                     }
                     x += n;
                 }
             } else {
-                *dst++ = pal[*src++];
+                if (x < picture->width) {
+                    *dst++ = *src;
+                }
+                src++;
                 x++;
             }
             if (x >= stride) {

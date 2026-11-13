@@ -39,7 +39,7 @@ void InitialiseHair()
     }
 }
 
-void HairControl(int in_cutscene)
+void HairControl(int32_t in_cutscene)
 {
     if (!T1MConfig.enable_braid || !Objects[O_HAIR].loaded) {
         return;

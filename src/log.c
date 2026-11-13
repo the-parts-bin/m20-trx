@@ -5,7 +5,9 @@
 
 void Log_Init()
 {
-    freopen("./Tomb1Main.log", "w", stdout);
+#ifndef M20_BOARD
+    freopen("./Tomb1Main.log", "w", stdout);   // (on the board: the UART)
+#endif
 }
 
 void Log_Message(

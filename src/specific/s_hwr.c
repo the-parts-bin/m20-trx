@@ -179,11 +179,11 @@ static uint16_t *PictureBuffer()
 // The frame as the background (the inventory's, over the game)
 void HWR_CopyPicture()
 {
-    memcpy(PictureBuffer(), M20_Frame, M20_W * M20_H * 2);
+    memcpy(PictureBuffer(), M20_LastFrame, M20_W * M20_H * 2);
     m_PictureValid = true;
 }
 
-// A picture (6 bits a component) as the background, fitted to the frame
+// A picture as the background, fitted to the frame
 void HWR_DownloadPicture(const PICTURE *pic)
 {
     uint16_t *dst = PictureBuffer();
@@ -196,11 +196,10 @@ void HWR_DownloadPicture(const PICTURE *pic)
     }
     int32_t x0 = (M20_W - w) / 2, y0 = (M20_H - h) / 2;
     for (int32_t y = 0; y < h; y++) {
-        const RGB888 *src = pic->data + (y * pic->height / h) * pic->width;
+        const uint8_t *src = pic->data + (y * pic->height / h) * pic->width;
         uint16_t *row = dst + (y0 + y) * M20_W + x0;
         for (int32_t x = 0; x < w; x++) {
-            const RGB888 *c = &src[x * pic->width / w];
-            row[x] = ((c->r >> 1) << 11) | (c->g << 5) | (c->b >> 1);
+            row[x] = pic->palette[src[x * pic->width / w]];
         }
     }
     m_PictureValid = true;

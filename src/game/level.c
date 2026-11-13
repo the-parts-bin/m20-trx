@@ -614,7 +614,7 @@ static bool Level_LoadTexturePages(MYFILE *fp)
     return true;
 }
 
-bool Level_Load(int level_num)
+bool Level_Load(int32_t level_num)
 {
     LOG_INFO("%d (%s)", level_num, GF.levels[level_num].level_file);
     bool ret = Level_LoadFromFile(GF.levels[level_num].level_file, level_num);

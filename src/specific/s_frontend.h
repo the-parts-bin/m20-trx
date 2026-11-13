@@ -24,7 +24,7 @@ void S_DrawScreenSprite(
     int16_t sprnum, int16_t shade, uint16_t flags);
 void S_DrawScreenSprite2d(
     int32_t sx, int32_t sy, int32_t z, int32_t scale_h, int32_t scale_v,
-    int32_t sprnum, int16_t shade, uint16_t flags, int page);
+    int32_t sprnum, int16_t shade, uint16_t flags, int32_t page);
 
 void S_FadeToBlack();
 

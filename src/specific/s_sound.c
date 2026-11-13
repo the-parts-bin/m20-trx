@@ -18,8 +18,6 @@
 #define DECIBEL_LUT_SIZE 512
 #define NUM_CHANNELS 32
 
-void M20_AudioLock(bool lock);
-
 typedef struct SAMPLE_DATA {
     const char *data;
     int32_t length;     // frames
@@ -105,7 +103,7 @@ static void BuildGainLUT()
 static void SetGains(CHANNEL *ch, int32_t volume, uint16_t pan)
 {
     int32_t g = m_GainLUT[(volume & 0x7FFF) >> 6];
-    int32_t p = sin((pan / 32767.0) * M_PI) * (DECIBEL_LUT_SIZE / 2);
+    int32_t p = sinf((pan / 32767.0f) * (float)M_PI) * (DECIBEL_LUT_SIZE / 2);
     int32_t l = g, r = g;
     if (p > 0) {
         l = l * m_GainLUT[DECIBEL_LUT_SIZE - p] >> 12;

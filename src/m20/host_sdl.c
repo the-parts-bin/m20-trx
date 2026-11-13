@@ -21,6 +21,7 @@
 #include <sys/time.h>
 
 uint16_t *M20_Frame;
+uint16_t *M20_LastFrame;
 uint8_t M20_Keys[256];
 int M20_Argc;
 char **M20_Argv;
@@ -340,6 +341,7 @@ int main(int argc, char **argv)
     M20_Argv = argv;
     static uint16_t frame[M20_W * M20_H];
     M20_Frame = frame;
+    M20_LastFrame = frame;
 
     const char *s = getenv("M20_STEPS");
     if (s) {

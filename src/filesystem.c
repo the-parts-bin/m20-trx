@@ -35,12 +35,24 @@ bool File_Exists(const char *path)
 
 // m20: the game's paths have backslashes, and the files on the CD are upper
 // case: '/' for '\\', and if the path as written isn't there, its upper case
+// (on the board, the game's directory on the card, M20_ROOT, in front)
+#ifdef M20_BOARD
+#define M20_ROOT "TOMB1/"
+#else
+#define M20_ROOT ""
+#endif
+
 void File_GetFullPath(const char *path, char **out)
 {
-    size_t n = strlen(path);
+    while (path[0] == '.' && (path[1] == '/' || path[1] == '\\')) {
+        path += 2;
+    }
+    size_t r = strlen(M20_ROOT);
+    size_t n = r + strlen(path);
     char *p = Memory_Alloc(n + 1);
-    for (size_t i = 0; i <= n; i++) {
-        p[i] = path[i] == '\\' ? '/' : path[i];
+    memcpy(p, M20_ROOT, r);
+    for (size_t i = r; i <= n; i++) {
+        p[i] = path[i - r] == '\\' ? '/' : path[i - r];
     }
     if (!File_Exists(p)) {
         char *u = Memory_Alloc(n + 1);
