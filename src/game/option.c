@@ -15,6 +15,35 @@
 #include "specific/s_input.h"
 
 #include <stdio.h>
+#include <string.h>
+
+// m20: fmt's first float conversion ("%.1f") as the value in tenths, in
+// integers (no float printf: the FPU is single precision, and varargs pass
+// floats as doubles)
+static void FormatTenths(char *buf, const char *fmt, float value)
+{
+    int32_t t = (int32_t)(value * 10.0f + (value < 0.0f ? -0.5f : 0.5f));
+    int32_t a = t < 0 ? -t : t;
+    char num[16];
+    snprintf(num, sizeof(num), "%s%ld.%ld", t < 0 ? "-" : "", (long)(a / 10),
+             (long)(a % 10));
+    const char *p = strchr(fmt, '%');
+    while (p && p[1] == '%') {
+        p = strchr(p + 2, '%');
+    }
+    const char *e = p ? p + 1 : NULL;
+    while (e && *e && strchr("0123456789.-+ #", *e)) {
+        e++;
+    }
+    if (!p || !e || (*e != 'f' && *e != 'F' && *e != 'g')) {
+        strcpy(buf, fmt);
+        return;
+    }
+    size_t n = (size_t)(p - fmt);
+    memcpy(buf, fmt, n);
+    strcpy(buf + n, num);
+    strcat(buf, e + 1);
+}
 
 #define GAMMA_MODIFIER 8
 #define MIN_GAMMA_LEVEL -127
@@ -556,20 +585,15 @@ void DoDetailOption(INVENTORY_ITEM *inv_item)
         DetailTextHW[DETAIL_HW_BILINEAR] = Text_Create(0, y, buf);
         y += DETAIL_HW_ROW_HEIGHT;
 
-        sprintf(
-            buf, GF.strings[GS_DETAIL_BRIGHTNESS_FMT], T1MConfig.brightness);
+        FormatTenths(buf, GF.strings[GS_DETAIL_BRIGHTNESS_FMT], T1MConfig.brightness);
         DetailTextHW[DETAIL_HW_BRIGHTNESS] = Text_Create(0, y, buf);
         y += DETAIL_HW_ROW_HEIGHT;
 
-        sprintf(
-            buf, GF.strings[GS_DETAIL_UI_TEXT_SCALE_FMT],
-            T1MConfig.ui.text_scale);
+        FormatTenths(buf, GF.strings[GS_DETAIL_UI_TEXT_SCALE_FMT], T1MConfig.ui.text_scale);
         DetailTextHW[DETAIL_HW_UI_TEXT_SCALE] = Text_Create(0, y, buf);
         y += DETAIL_HW_ROW_HEIGHT;
 
-        sprintf(
-            buf, GF.strings[GS_DETAIL_UI_BAR_SCALE_FMT],
-            T1MConfig.ui.bar_scale);
+        FormatTenths(buf, GF.strings[GS_DETAIL_UI_BAR_SCALE_FMT], T1MConfig.ui.bar_scale);
         DetailTextHW[DETAIL_HW_UI_BAR_SCALE] = Text_Create(0, y, buf);
         y += DETAIL_HW_ROW_HEIGHT;
 
@@ -651,14 +675,14 @@ void DoDetailOption(INVENTORY_ITEM *inv_item)
 
         case DETAIL_HW_UI_TEXT_SCALE:
             if (T1MConfig.ui.text_scale < MAX_UI_SCALE) {
-                T1MConfig.ui.text_scale += 0.1;
+                T1MConfig.ui.text_scale += 0.1f;
                 reset = true;
             }
             break;
 
         case DETAIL_HW_UI_BAR_SCALE:
             if (T1MConfig.ui.bar_scale < MAX_UI_SCALE) {
-                T1MConfig.ui.bar_scale += 0.1;
+                T1MConfig.ui.bar_scale += 0.1f;
                 reset = true;
             }
             break;
@@ -696,14 +720,14 @@ void DoDetailOption(INVENTORY_ITEM *inv_item)
 
         case DETAIL_HW_UI_TEXT_SCALE:
             if (T1MConfig.ui.text_scale > MIN_UI_SCALE) {
-                T1MConfig.ui.text_scale -= 0.1;
+                T1MConfig.ui.text_scale -= 0.1f;
                 reset = true;
             }
             break;
 
         case DETAIL_HW_UI_BAR_SCALE:
             if (T1MConfig.ui.bar_scale > MIN_UI_SCALE) {
-                T1MConfig.ui.bar_scale -= 0.1;
+                T1MConfig.ui.bar_scale -= 0.1f;
                 reset = true;
             }
             break;

@@ -2771,11 +2771,16 @@ struct json_number_s *json_number_new_int(int number)
     return elem;
 }
 
-struct json_number_s *json_number_new_double(double number)
+struct json_number_s *json_number_new_double(float number)
 {
     size_t size = 30;
     char *buf = malloc(size);
-    sprintf(buf, "%f", number);
+    // m20: in integers (no float printf: the FPU is single precision, and
+    // varargs pass floats as doubles)
+    int32_t micro = (int32_t)(number * 1000000.0f + (number < 0 ? -0.5f : 0.5f));
+    uint32_t a = micro < 0 ? -micro : micro;
+    sprintf(buf, "%s%lu.%06lu", micro < 0 ? "-" : "", (unsigned long)(a / 1000000),
+            (unsigned long)(a % 1000000));
     struct json_number_s *elem = malloc(sizeof(struct json_number_s));
     elem->number = buf;
     elem->number_size = strlen(buf);
@@ -2856,7 +2861,7 @@ void json_array_append_number_int(struct json_array_s *arr, int number)
     json_array_append(arr, json_value_from_number(json_number_new_int(number)));
 }
 
-void json_array_append_number_double(struct json_array_s *arr, double number)
+void json_array_append_number_double(struct json_array_s *arr, float number)
 {
     json_array_append(
         arr, json_value_from_number(json_number_new_double(number)));
@@ -2902,13 +2907,13 @@ int json_array_get_number_int(struct json_array_s *arr, const size_t idx, int d)
     return d;
 }
 
-double json_array_get_number_double(
-    struct json_array_s *arr, const size_t idx, double d)
+float json_array_get_number_double(
+    struct json_array_s *arr, const size_t idx, float d)
 {
     struct json_value_s *value = json_array_get_value(arr, idx);
     struct json_number_s *num = json_value_as_number(value);
     if (num) {
-        return atof(num->number);
+        return strtof(num->number, NULL);
     }
     return d;
 }
@@ -2996,7 +3001,7 @@ void json_object_append_number_int(
 }
 
 void json_object_append_number_double(
-    struct json_object_s *obj, const char *key, double number)
+    struct json_object_s *obj, const char *key, float number)
 {
     json_object_append(
         obj, key, json_value_from_number(json_number_new_double(number)));
@@ -3046,13 +3051,13 @@ int json_object_get_number_int(
     return d;
 }
 
-double json_object_get_number_double(
-    struct json_object_s *obj, const char *key, double d)
+float json_object_get_number_double(
+    struct json_object_s *obj, const char *key, float d)
 {
     struct json_value_s *value = json_object_get_value(obj, key);
     struct json_number_s *num = json_value_as_number(value);
     if (num) {
-        return atof(num->number);
+        return strtof(num->number, NULL);
     }
     return d;
 }

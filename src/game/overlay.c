@@ -311,7 +311,7 @@ void Overlay_DrawEnemyBar()
 
 void Overlay_DrawAmmoInfo()
 {
-    const double scale = 0.8;
+    const float scale = 0.8;
     const int32_t text_height = 17 * scale;
     const int32_t text_offset_x = 3;
     const int32_t screen_margin_h = 20;

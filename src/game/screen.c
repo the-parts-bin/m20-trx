@@ -121,11 +121,11 @@ int32_t Screen_GetRenderScale(int32_t unit)
     int32_t baseWidth = 640;
     int32_t baseHeight = 480;
     int32_t scale_x = Screen_GetResWidth() > baseWidth
-        ? ((double)Screen_GetResWidth() * unit * T1MConfig.ui.text_scale)
+        ? ((float)Screen_GetResWidth() * unit * T1MConfig.ui.text_scale)
             / baseWidth
         : unit * T1MConfig.ui.text_scale;
     int32_t scale_y = Screen_GetResHeight() > baseHeight
-        ? ((double)Screen_GetResHeight() * unit * T1MConfig.ui.text_scale)
+        ? ((float)Screen_GetResHeight() * unit * T1MConfig.ui.text_scale)
             / baseHeight
         : unit * T1MConfig.ui.text_scale;
     return MIN(scale_x, scale_y);
@@ -134,7 +134,7 @@ int32_t Screen_GetRenderScale(int32_t unit)
 int32_t Screen_GetRenderScaleGLRage(int32_t unit)
 {
     // GLRage-style UI scaler
-    double result = Screen_GetResWidth();
+    float result = Screen_GetResWidth();
     result *= unit;
     result /= 800.0;
 
@@ -143,5 +143,5 @@ int32_t Screen_GetRenderScaleGLRage(int32_t unit)
         result = unit;
     }
 
-    return round(result);
+    return roundf(result);
 }

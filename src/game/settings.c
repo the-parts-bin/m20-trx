@@ -74,7 +74,7 @@ static int32_t S_ReadUserSettingsATI()
     // Skip GameSizer from TombATI, which is no longer used in T1M.
     // In the original game, it's expected to be 1.0 everywhere and changing it
     // to any other value results in uninteresting window clipping anomalies.
-    File_Seek(fp, sizeof(double), FILE_SEEK_CUR);
+    File_Seek(fp, 8, FILE_SEEK_CUR);   // (a double in the file)
 
     File_Read(&T1MConfig.input.layout, sizeof(int32_t), 1, fp);
 

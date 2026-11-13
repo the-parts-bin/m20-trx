@@ -186,10 +186,11 @@ CFLAGS_BOARD := $(ARCH) -O2 -g --picolibc-buildtype=release -specs=picolibc.spec
                 -DVERSION='"T1M m20"' -DFF_FS_READONLY=0 -Isrc -I$(CORE_FW) -I$(CORE_FW)/fatfs \
                 -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
                 -Wno-pointer-sign -Wno-unused-result -Wno-format -Wno-stringop-truncation -Wno-maybe-uninitialized \
+                -fsingle-precision-constant -Wdouble-promotion -DPICOLIBC_INTEGER_PRINTF_SCANF \
                 $(if $(PROFILE),-DM9B_PROFILE -DPROF_TOP=0)
 # make PROFILE=1: the PC-sampling profiler (build-WxH-prof/; Ctrl-P on the
 # UART prints it, core's tools/m9bctl.py prof and tools/prof.py read it)
-LDFLAGS_BOARD := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release \
+LDFLAGS_BOARD := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release -DPICOLIBC_INTEGER_PRINTF_SCANF \
                  -Wl,--defsym=__stack_size=0x20000 -Wl,--gc-sections -Wl,-Map=$(B)/tomb1.map \
                  -T$(CORE_RT)/m9b.ld
 CORE_SRC := $(CORE_RT)/syscalls.c $(CORE_RT)/string.c $(CORE_RT)/trap.c $(CORE_RT)/shot.c \
@@ -234,7 +235,7 @@ $(B)/tomb1.bin: $(B)/tomb1.elf
 HB := build-host-$(RES)
 CFLAGS_HOST := -m32 -O2 -g -std=gnu11 -D_GNU_SOURCE -DM20 -DM20_W=$(RES_W) -DM20_H=$(RES_H) \
                -DM20_HEAP=$(M20_HEAP)u -DM20_GAMEBUF=$(M20_GAMEBUF) -DVERSION='"T1M m20"' \
-               -Isrc -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
+               -Isrc -I$(CORE_FW) -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
                -Wno-pointer-sign -Wno-unused-result -Wno-format-truncation \
                $(shell PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config --cflags sdl2)
 LIBS_HOST := $(shell PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config --libs sdl2) -lm

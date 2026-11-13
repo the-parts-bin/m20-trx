@@ -178,9 +178,20 @@ void M20_Present(void)
     uint32_t now = M20_TimeUs();
     if (now - m_FpsStart >= 5000000u) {
         uint32_t tenths = m_FpsFrames * 10000000u / ((now - m_FpsStart) / 10u) / 10u;
-        printf("%u.%u fps, %u misaligned\n", (unsigned)(tenths / 10),
-               (unsigned)(tenths % 10), (unsigned)misaligned_traps);
+        printf("%u.%u fps (%s), %u misaligned\n", (unsigned)(tenths / 10),
+               (unsigned)(tenths % 10), HWR_SpanOn ? "engine" : "cpu",
+               (unsigned)misaligned_traps);
         misaligned_traps = 0;
+        if (m_FpsFrames && HWR_SpanOn) {
+            HWR_SPAN_STATS *st = &HWR_SpanStats;
+            uint32_t f = m_FpsFrames;
+            printf("  engine: %u faces, %u pixels, waited %u times, %u.%u ms per frame\n",
+                   (unsigned)(st->faces / f), (unsigned)(st->pixels / f),
+                   (unsigned)(st->waits / f),
+                   (unsigned)(st->wait_clk / f / CLOCK_PER_MS),
+                   (unsigned)(st->wait_clk / f % CLOCK_PER_MS * 10 / CLOCK_PER_MS));
+        }
+        memset(&HWR_SpanStats, 0, sizeof(HWR_SpanStats));
         m_FpsStart = now;
         m_FpsFrames = 0;
     }
@@ -306,6 +317,9 @@ static void uart_keys(uint32_t now_ms)
             extern void prof_report(void);
             prof_report();
 #endif
+        } else if (c == 0x0B) {   // Ctrl-K: the span engine off and on
+            HWR_SpanOn = !HWR_SpanOn;
+            printf("span engine %s\n", HWR_SpanOn ? "on" : "off");
         } else if (c == 0x1C) {   // m9bctl.py shot: the frame on screen
             if (m_Shown >= 0) {
                 m20_screenshot16(M20_W, M20_H, m_Disp[m_Shown], M20_W);

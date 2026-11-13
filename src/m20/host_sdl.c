@@ -14,7 +14,9 @@
 // gameflow's numbers: 0 Lara's Home, 1 Caves, ... 15 the Great Pyramid);
 // M20_ZBUF=0 sorted (the default), 1 the depth buffer, 2 both, compared:
 // each frame's count of differing pixels on stderr ("zdiff"), and with each
-// saved frame the sorted one as fNNNNN-s.ppm (F8 in the window cycles them).
+// saved frame the sorted one as fNNNNN-s.ppm (F8 in the window cycles them);
+// M20_SPAN=1 the span engine's C model for the opaque textured faces, as on
+// the board (F7 in the window toggles it).
 #include "m20/m20_platform.h"
 #include "specific/s_hwr.h"
 
@@ -292,6 +294,11 @@ void M20_PollInput(void)
             && !e.key.repeat) {
             save_ppm();
         }
+        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F7
+            && !e.key.repeat) {
+            HWR_SpanOn = !HWR_SpanOn;
+            fprintf(stderr, "span engine (model): %s\n", HWR_SpanOn ? "on" : "off");
+        }
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F8
             && !e.key.repeat) {
             HWR_ZMode = (HWR_ZMode + 1) % 3;
@@ -388,6 +395,9 @@ int main(int argc, char **argv)
     }
     if (getenv("M20_LEVEL")) {
         M20_StartLevel = atoi(getenv("M20_LEVEL"));
+    }
+    if (getenv("M20_SPAN")) {
+        HWR_SpanOn = atoi(getenv("M20_SPAN")) != 0;
     }
     if (getenv("M20_ZBUF")) {
         HWR_ZMode = atoi(getenv("M20_ZBUF"));

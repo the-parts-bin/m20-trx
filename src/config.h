@@ -87,8 +87,8 @@ typedef struct {
     } render_flags;
 
     struct {
-        double text_scale;
-        double bar_scale;
+        float text_scale;
+        float bar_scale;
     } ui;
 
     int32_t sound_volume;

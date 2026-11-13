@@ -158,7 +158,7 @@ static bool S_LoadScriptMeta(struct json_object_s *obj)
 {
     const char *tmp_s;
     int tmp_i;
-    double tmp_d;
+    float tmp_d;
     struct json_array_s *tmp_arr;
 
     tmp_s =
@@ -212,7 +212,7 @@ static bool S_LoadScriptMeta(struct json_object_s *obj)
     }
 
     if (json_object_get_value(obj, "draw_distance_fade")) {
-        double value = json_object_get_number_double(
+        float value = json_object_get_number_double(
             obj, "draw_distance_fade", JSON_INVALID_NUMBER);
         if (value == JSON_INVALID_NUMBER) {
             LOG_ERROR("'draw_distance_fade' must be a number");
@@ -224,7 +224,7 @@ static bool S_LoadScriptMeta(struct json_object_s *obj)
     }
 
     if (json_object_get_value(obj, "draw_distance_max")) {
-        double value = json_object_get_number_double(
+        float value = json_object_get_number_double(
             obj, "draw_distance_max", JSON_INVALID_NUMBER);
         if (value == JSON_INVALID_NUMBER) {
             LOG_ERROR("'draw_distance_max' must be a number");
@@ -350,7 +350,7 @@ static bool GF_LoadLevelSequence(struct json_object_s *obj, int32_t level_num)
                 return false;
             }
 
-            double tmp_d =
+            float tmp_d =
                 json_object_get_number_double(jseq_obj, "display_time", -1.0);
             if (tmp_d < 0.0) {
                 LOG_ERROR(
@@ -651,7 +651,7 @@ static bool S_LoadScriptLevels(struct json_object_s *obj)
         }
 
         {
-            double value = json_object_get_number_double(
+            float value = json_object_get_number_double(
                 jlvl_obj, "draw_distance_fade", JSON_INVALID_NUMBER);
             if (value != JSON_INVALID_NUMBER) {
                 cur->draw_distance_fade.override = true;
@@ -662,7 +662,7 @@ static bool S_LoadScriptLevels(struct json_object_s *obj)
         }
 
         {
-            double value = json_object_get_number_double(
+            float value = json_object_get_number_double(
                 jlvl_obj, "draw_distance_max", JSON_INVALID_NUMBER);
             if (value != JSON_INVALID_NUMBER) {
                 cur->draw_distance_max.override = true;

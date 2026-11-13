@@ -94,9 +94,9 @@ static void BuildGainLUT()
 {
     m_GainLUT[0] = 0;
     for (int i = 1; i < DECIBEL_LUT_SIZE; i++) {
-        double db = -9000.0 + 1000.0 * log2((double)i);
-        double g = pow(10.0, db / 2000.0) * 4096.0;
-        m_GainLUT[i] = g > 4096.0 ? 4096 : (uint16_t)g;
+        float db = -9000.0f + 1000.0f * log2f((float)i);
+        float g = powf(10.0f, db / 2000.0f) * 4096.0f;
+        m_GainLUT[i] = g > 4096.0f ? 4096 : (uint16_t)g;
     }
 }
 

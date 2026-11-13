@@ -57,6 +57,17 @@ typedef struct HWR_STATS {
 } HWR_STATS;
 extern HWR_STATS HWR_Stats;
 
+// The span engine (s_hwr_span.h): on for the opaque textured faces
+typedef struct HWR_SPAN_STATS {
+    uint32_t faces;         // faces it drew
+    uint32_t pixels;        // their pixels
+    uint32_t waits;         // times the CPU waited for it
+    uint32_t wait_clk;      // the clocks it waited (the board)
+} HWR_SPAN_STATS;
+extern bool HWR_SpanOn;
+extern HWR_SPAN_STATS HWR_SpanStats;
+void HWR_SpanLevel(int32_t pages);
+
 // 0: sorted only, 1: the depth buffer, 2: both, compared (s_hwr.c)
 extern int HWR_ZMode;
 const uint16_t *HWR_SortedFrame(void);

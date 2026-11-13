@@ -295,7 +295,7 @@ const char *json_get_error_description(enum json_parse_error_e error);
 
 // numbers
 struct json_number_s *json_number_new_int(int number);
-struct json_number_s *json_number_new_double(double number);
+struct json_number_s *json_number_new_double(float number);
 void json_number_free(struct json_number_s *num);
 
 // strings
@@ -309,7 +309,7 @@ void json_array_free(struct json_array_s *arr);
 void json_array_append(struct json_array_s *arr, struct json_value_s *value);
 void json_array_append_bool(struct json_array_s *arr, int b);
 void json_array_append_number_int(struct json_array_s *arr, int number);
-void json_array_append_number_double(struct json_array_s *arr, double number);
+void json_array_append_number_double(struct json_array_s *arr, float number);
 void json_array_append_array(
     struct json_array_s *arr, struct json_array_s *arr2);
 
@@ -318,8 +318,8 @@ struct json_value_s *json_array_get_value(
 int json_array_get_bool(struct json_array_s *arr, const size_t idx, int d);
 int json_array_get_number_int(
     struct json_array_s *arr, const size_t idx, int d);
-double json_array_get_number_double(
-    struct json_array_s *arr, const size_t idx, double d);
+float json_array_get_number_double(
+    struct json_array_s *arr, const size_t idx, float d);
 const char *json_array_get_string(
     struct json_array_s *arr, const size_t idx, const char *d);
 struct json_array_s *json_array_get_array(
@@ -337,7 +337,7 @@ void json_object_append_bool(struct json_object_s *obj, const char *key, int b);
 void json_object_append_number_int(
     struct json_object_s *obj, const char *key, int number);
 void json_object_append_number_double(
-    struct json_object_s *obj, const char *key, double number);
+    struct json_object_s *obj, const char *key, float number);
 void json_object_append_array(
     struct json_object_s *obj, const char *key, struct json_array_s *arr);
 
@@ -346,8 +346,8 @@ struct json_value_s *json_object_get_value(
 int json_object_get_bool(struct json_object_s *obj, const char *key, int d);
 int json_object_get_number_int(
     struct json_object_s *obj, const char *key, int d);
-double json_object_get_number_double(
-    struct json_object_s *obj, const char *key, double d);
+float json_object_get_number_double(
+    struct json_object_s *obj, const char *key, float d);
 const char *json_object_get_string(
     struct json_object_s *obj, const char *key, const char *d);
 struct json_array_s *json_object_get_array(
