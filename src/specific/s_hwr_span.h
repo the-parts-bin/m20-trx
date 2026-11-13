@@ -34,7 +34,11 @@
 
 #ifdef M20_BOARD
 bool HWR_SpanOn = true;
-bool HWR_ZEngine = false;   // (a bitstream with the engine's depth test)
+#ifdef M20_ZENGINE   // make ZENGINE=1: a bitstream with the engine's depth test
+bool HWR_ZEngine = true;
+#else
+bool HWR_ZEngine = false;
+#endif
 #else
 bool HWR_SpanOn = false;
 bool HWR_ZEngine = true;
@@ -272,14 +276,14 @@ static void SpanBegin(void)
     }
     SPAN_HW[16] = SDRAM_OFF(M20_Frame);
     SPAN_HW[17] = M20_W;
-    if (m_Stream) {   // the depth buffer, tested (direct register 6, bit 0)
+    if (m_Stream) {   // the depth buffer, tested (direct register 6 at 0x68, bit 0)
         SPAN_HW[18] = SDRAM_OFF(m_ZBuf);
         SPAN_HW[19] = M20_W;
-        SPAN_HW[22] = 1;
+        SPAN_HW[26] = 1;
     } else {
         SPAN_HW[18] = SDRAM_OFF(m_ZDummy);
         SPAN_HW[19] = 0;
-        SPAN_HW[22] = 0;
+        SPAN_HW[26] = 0;
     }
 #endif
 }

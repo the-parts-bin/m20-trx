@@ -178,7 +178,7 @@ CORE    ?= ../m20-system/core
 CORE_FW := $(CORE)/firmware
 CORE_RT := $(CORE)/runtime
 CROSS   ?= riscv64-unknown-elf-
-B       := build-$(RES)$(if $(PROFILE),-prof)$(if $(TIMEDEMO),-td)
+B       := build-$(RES)$(if $(PROFILE),-prof)$(if $(TIMEDEMO),-td)$(if $(ZENGINE),-z)
 ARCH    := -march=rv32imf_zba_zicbop_zicsr_zifencei_zicbom_zicboz -mabi=ilp32f
 CFLAGS_BOARD := $(ARCH) -O2 -g --picolibc-buildtype=release -specs=picolibc.specs -std=gnu11 \
                 -ffunction-sections -fdata-sections -fno-strict-aliasing \
@@ -187,7 +187,7 @@ CFLAGS_BOARD := $(ARCH) -O2 -g --picolibc-buildtype=release -specs=picolibc.spec
                 -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
                 -Wno-pointer-sign -Wno-unused-result -Wno-format -Wno-stringop-truncation -Wno-maybe-uninitialized \
                 -fsingle-precision-constant -Wdouble-promotion -DPICOLIBC_INTEGER_PRINTF_SCANF \
-                $(if $(PROFILE),-DM9B_PROFILE -DPROF_TOP=0) $(if $(TIMEDEMO),-DM20_TIMEDEMO)
+                $(if $(PROFILE),-DM9B_PROFILE -DPROF_TOP=0) $(if $(TIMEDEMO),-DM20_TIMEDEMO) $(if $(ZENGINE),-DM20_ZENGINE)
 # make TIMEDEMO=1: one game step per frame, the demos timed (build-WxH-td/)
 # make PROFILE=1: the PC-sampling profiler (build-WxH-prof/; Ctrl-P on the
 # UART prints it, core's tools/m9bctl.py prof and tools/prof.py read it)

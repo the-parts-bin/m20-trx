@@ -162,6 +162,10 @@ static void video_init(void)
 }
 
 static uint32_t m_FpsStart, m_FpsFrames;
+#ifdef M20_TIMEDEMO
+#define TD_FRAMES 250u   // (Vilcabamba's demo is about 280)
+static uint32_t m_TdFrames0, m_TdT0;
+#endif
 static int m_Reserved = -1;   // the display buffer holding the menus' background
 
 // A buffer neither shown, waiting nor reserved; -1 if there's none
@@ -224,6 +228,14 @@ void M20_Present(void)
     m_Drawing = n;
     M20_Frame = m_Disp[n];
     m_Frames++;
+#ifdef M20_TIMEDEMO
+    if (m_Frames - m_TdFrames0 == TD_FRAMES) {
+        uint32_t t = M20_TimeUs() - m_TdT0;
+        printf("timedemo: %u frames in %u ms, %u.%u fps\n", (unsigned)TD_FRAMES,
+               (unsigned)(t / 1000u), (unsigned)(TD_FRAMES * 1000000ull / t),
+               (unsigned)(TD_FRAMES * 10000000ull / t % 10u));
+    }
+#endif
 
     // the frame rate on the UART every 5 s
     m_FpsFrames++;
@@ -462,18 +474,8 @@ extern char __heap_start[], __heap_end[];
 void S_Shell_ReportMemory(const char *what)
 {
 #ifdef M20_TIMEDEMO
-    {
-        static uint32_t frames0, t0;
-        uint32_t t = M20_TimeUs(), n = m_Frames - frames0;
-        if (n) {
-            printf("timedemo: %u frames in %u ms, %u.%u fps\n", (unsigned)n,
-                   (unsigned)((t - t0) / 1000u),
-                   (unsigned)(n * 1000000ull / (t - t0)),
-                   (unsigned)(n * 10000000ull / (t - t0) % 10u));
-        }
-        frames0 = m_Frames;
-        t0 = t;
-    }
+    m_TdFrames0 = m_Frames;   // (the first TD_FRAMES after a level's load)
+    m_TdT0 = M20_TimeUs();
 #endif
     struct mallinfo mi = mallinfo();
     printf("render: peak %d primitives, %d vertices, %d dropped\n",
