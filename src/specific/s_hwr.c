@@ -84,6 +84,32 @@ static bool m_PictureValid;
 
 static int32_t m_ClipL, m_ClipT, m_ClipR, m_ClipB;   // inclusive
 
+// The depth buffer (HWR_ZMode 1, and 2 for the comparison): 16 bits a
+// pixel, 1/z scaled so that the near plane is 65535 (bigger is nearer; as
+// Quake's, which the span engine writes). 1/z is linear on the screen, so
+// it steps per pixel exactly, in 4.12 fixed point here. Opaque faces and
+// sprites test and write it (a transparent texel neither), shadows and the
+// translucent faces only test it (shadows a little nearer: they lie on the
+// floor), the 2D doesn't use it. The sort stays, for the translucent faces.
+// HWR_ZMode 2 draws each frame both ways, shows the depth buffer's and
+// counts the pixels that differ (HWR_Stats.zdiff).
+#ifndef M20_ZBUF
+#ifdef M20_BOARD
+#define M20_ZBUF 0
+#else
+#define M20_ZBUF 1
+#endif
+#endif
+int HWR_ZMode;
+#if M20_ZBUF
+static uint16_t m_ZBuf[M20_W * M20_H];
+static uint16_t m_Save[M20_W * M20_H], m_Sorted[M20_W * M20_H];
+#endif
+static bool m_ZOn;          // this pass tests the depth buffer
+static float m_ZScale;      // 1/z to depth, 4.12
+#define Z_FRAC 12
+#define Z_BIAS(z) ((z) + ((z) >> 5))
+
 // ---------------------------------------------------------------------
 // Palette and shading
 // ---------------------------------------------------------------------
@@ -559,6 +585,7 @@ void HWR_DrawSprite(
     v[1].v = sprite->height >> 8;
     CLAMP(shade, 0, 0x1FFF);
     v[0].g = shade;
+    v[0].z = z > 0 ? (float)z : 1.0f;   // its depth (view z)
     v[2].x = l;
     v[2].y = t;
     v[2].u = r;
@@ -743,7 +770,7 @@ static bool ScanFace(const HVERT *v, int32_t n, bool textured)
     m_RowMin = M20_H;
     m_RowMax = -1;
     for (int32_t i = 0; i < n; i++) {
-        ScanEdge(&v[i], &v[(i + 1) % n], textured);
+        ScanEdge(&v[i], &v[(i + 1) % n], textured || m_ZOn);
     }
     return m_RowMin <= m_RowMax;
 }
@@ -771,6 +798,27 @@ static bool RowSpan(
 }
 
 #define SUBDIV 16
+
+#if M20_ZBUF
+// The row's depth at its first pixel, and its step, 4.12
+static void RowDepth(
+    const EDGE *l, const EDGE *r, int32_t x0, int32_t *z, int32_t *dz)
+{
+    float w = (float)(r->x - l->x) * (1.0f / 65536.0f);
+    float diz = w > 0.5f ? (r->iz - l->iz) / w : 0.0f;
+    float t0 = ((x0 << 16) + 0x8000 - l->x) * (1.0f / 65536.0f);
+    float zf = (l->iz + diz * t0) * m_ZScale;
+    float max = 65535.0f * (1 << Z_FRAC);
+    *z = zf < 0.0f ? 0 : zf > max ? (int32_t)max : (int32_t)zf;
+    *dz = (int32_t)(diz * m_ZScale);
+}
+
+static inline int32_t ZClamp(int32_t z)
+{
+    z >>= Z_FRAC;
+    return z < 0 ? 0 : z > 65535 ? 65535 : z;
+}
+#endif
 
 static void DrawGT(const PRIM *p)
 {
@@ -801,6 +849,42 @@ static void DrawGT(const PRIM *p)
         int32_t n = x1 - x0;
         float z = 1.0f / iz;
         int32_t u = (int32_t)(uz * z), vv = (int32_t)(vz * z);
+#if M20_ZBUF
+        if (m_ZOn) {
+            uint16_t *zb = m_ZBuf + y * M20_W + x0;
+            int32_t zd, dzd;
+            RowDepth(l, r, x0, &zd, &dzd);
+            while (n > 0) {
+                int32_t run = n < SUBDIV ? n : SUBDIV;
+                iz += diz * run;
+                uz += duz * run;
+                vz += dvz * run;
+                z = 1.0f / iz;
+                int32_t u2 = (int32_t)(uz * z), v2 = (int32_t)(vz * z);
+                int32_t du = (u2 - u) / run, dv = (v2 - vv) / run;
+                for (int32_t i = 0; i < run; i++) {
+                    int32_t zq = ZClamp(zd);
+                    if (zq >= *zb) {
+                        uint8_t c = tex[(vv & 0xFF00) | ((u >> 8) & 0xFF)];
+                        if (c) {
+                            *dst = shade[(g >> 24) & 31][c];
+                            *zb = zq;
+                        }
+                    }
+                    dst++;
+                    zb++;
+                    zd += dzd;
+                    u += du;
+                    vv += dv;
+                    g += dg;
+                }
+                u = u2;
+                vv = v2;
+                n -= run;
+            }
+            continue;
+        }
+#endif
         while (n > 0) {
             int32_t run = n < SUBDIV ? n : SUBDIV;
             iz += diz * run;
@@ -844,6 +928,21 @@ static void DrawG(const PRIM *p)
         int32_t dg = w > 0 ? (r->g - l->g) / w : 0;
         int32_t g = l->g + dg * (x0 - (l->x >> 16));
         uint16_t *dst = M20_Frame + y * M20_W;
+#if M20_ZBUF
+        if (m_ZOn) {
+            uint16_t *zb = m_ZBuf + y * M20_W;
+            int32_t zd, dzd;
+            RowDepth(l, r, x0, &zd, &dzd);
+            for (int32_t x = x0; x < x1; x++, zd += dzd, g += dg) {
+                int32_t zq = ZClamp(zd);
+                if (zq >= zb[x]) {
+                    dst[x] = shade[(g >> 24) & 31][c];
+                    zb[x] = zq;
+                }
+            }
+            continue;
+        }
+#endif
         for (int32_t x = x0; x < x1; x++) {
             dst[x] = shade[(g >> 24) & 31][c];
             g += dg;
@@ -864,6 +963,20 @@ static void DrawTrans(const PRIM *p, uint16_t tint)
             continue;
         }
         uint16_t *dst = M20_Frame + y * M20_W;
+#if M20_ZBUF
+        if (m_ZOn) {
+            uint16_t *zb = m_ZBuf + y * M20_W;
+            int32_t zd, dzd;
+            RowDepth(l, r, x0, &zd, &dzd);
+            for (int32_t x = x0; x < x1; x++, zd += dzd) {
+                int32_t zq = ZClamp(zd);
+                if (Z_BIAS(zq) >= zb[x]) {
+                    dst[x] = ((dst[x] >> 1) & 0x7BEF) + tint;
+                }
+            }
+            continue;
+        }
+#endif
         for (int32_t x = x0; x < x1; x++) {
             dst[x] = ((dst[x] >> 1) & 0x7BEF) + tint;
         }
@@ -895,6 +1008,28 @@ static void DrawSprite(const PRIM *p)
     }
     const uint8_t *tex = (const uint8_t *)TexturePagePtrs[p->tex];
     const uint16_t *shade = (p->water ? m_ShadeWater : m_Shade)[v[0].g >> 8];
+#if M20_ZBUF
+    if (m_ZOn) {
+        float zf = m_ZScale / v[0].z / (1 << Z_FRAC);
+        uint16_t zq = zf > 65535.0f ? 65535 : (uint16_t)zf;
+        for (int32_t y = y0; y < y1; y++, vv += dv) {
+            uint16_t *dst = M20_Frame + y * M20_W;
+            uint16_t *zb = m_ZBuf + y * M20_W;
+            const uint8_t *row = tex + ((vv >> 8) & 0xFF00);
+            int32_t u = u0;
+            for (int32_t x = x0; x < x1; x++, u += du) {
+                if (zq >= zb[x]) {
+                    uint8_t c = row[(u >> 16) & 0xFF];
+                    if (c) {
+                        dst[x] = shade[c];
+                        zb[x] = zq;
+                    }
+                }
+            }
+        }
+        return;
+    }
+#endif
     for (int32_t y = y0; y < y1; y++, vv += dv) {
         uint16_t *dst = M20_Frame + y * M20_W;
         const uint8_t *row = tex + ((vv >> 8) & 0xFF00);
@@ -975,6 +1110,8 @@ static void DrawLine2D(const PRIM *p)
     }
 }
 
+static void DrawPass(const uint16_t *order, int32_t n, bool z);
+
 void HWR_OutputPolyList()
 {
     int32_t n = m_NumPrims;
@@ -1012,9 +1149,54 @@ void HWR_OutputPolyList()
     m_ClipT = 0;
     m_ClipR = M20_W - 1;
     m_ClipB = M20_H - 1;
+    m_ZScale = (float)phd_GetNearZ() * 65535.0f * (1 << Z_FRAC);
 
+#if M20_ZBUF
+    if (HWR_ZMode == 2) {
+        memcpy(m_Save, M20_Frame, sizeof(m_Save));
+        DrawPass(src, n, false);
+        memcpy(m_Sorted, M20_Frame, sizeof(m_Sorted));
+        memcpy(M20_Frame, m_Save, sizeof(m_Save));
+        DrawPass(src, n, true);
+        int32_t diff = 0;
+        for (int32_t i = 0; i < M20_W * M20_H; i++) {
+            diff += m_Sorted[i] != M20_Frame[i];
+        }
+        HWR_Stats.zdiff = diff;
+    } else {
+        DrawPass(src, n, HWR_ZMode == 1);
+    }
+#else
+    DrawPass(src, n, false);
+#endif
+
+    m_NumPrims = 0;
+    m_NumVerts = 0;
+}
+
+#if M20_ZBUF
+// The sorted frame of the last comparison (HWR_ZMode 2), for the harness
+const uint16_t *HWR_SortedFrame(void)
+{
+    return m_Sorted;
+}
+
+const uint16_t *HWR_DepthBuffer(void)
+{
+    return m_ZBuf;
+}
+#endif
+
+static void DrawPass(const uint16_t *order, int32_t n, bool z)
+{
+    m_ZOn = z;
+#if M20_ZBUF
+    if (z) {
+        memset(m_ZBuf, 0, sizeof(m_ZBuf));
+    }
+#endif
     for (int32_t i = 0; i < n; i++) {
-        const PRIM *p = &m_Prims[src[i]];
+        const PRIM *p = &m_Prims[order[i]];
         switch (p->type) {
         case PRIM_GT:
             DrawGT(p);
@@ -1039,7 +1221,5 @@ void HWR_OutputPolyList()
             break;
         }
     }
-
-    m_NumPrims = 0;
-    m_NumVerts = 0;
+    m_ZOn = false;
 }

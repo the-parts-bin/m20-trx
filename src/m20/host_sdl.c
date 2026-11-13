@@ -11,8 +11,12 @@
 // frames saved as images, and M20_KEYS=frame:hex,... the keys held from
 // those frames on, as bits of the INPUT_STATE: no window then, for scripted
 // runs); M20_HEADLESS=1 no window; M20_LEVEL=N starts at level N (the
-// gameflow's numbers: 0 Lara's Home, 1 Caves, ... 15 the Great Pyramid).
+// gameflow's numbers: 0 Lara's Home, 1 Caves, ... 15 the Great Pyramid);
+// M20_ZBUF=0 sorted (the default), 1 the depth buffer, 2 both, compared:
+// each frame's count of differing pixels on stderr ("zdiff"), and with each
+// saved frame the sorted one as fNNNNN-s.ppm (F8 in the window cycles them).
 #include "m20/m20_platform.h"
+#include "specific/s_hwr.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -157,11 +161,6 @@ void *__wrap_realloc(void *p, size_t size)
     return q;
 }
 
-typedef struct {
-    int32_t prims, verts, prims_peak, verts_peak, overflows;
-} HWR_STATS_COPY;
-extern HWR_STATS_COPY HWR_Stats;   // specific/s_hwr.h
-
 void S_Shell_ReportMemory(const char *what)
 {
     fprintf(
@@ -176,17 +175,17 @@ void S_Shell_ReportMemory(const char *what)
 // ---------------------------------------------------------------------
 // Video, input, time
 // ---------------------------------------------------------------------
-static void save_ppm(void)
+static void save_one(const uint16_t *frame, const char *suffix)
 {
     char name[32];
-    snprintf(name, sizeof(name), "f%05d.ppm", m_FrameNo);
+    snprintf(name, sizeof(name), "f%05d%s.ppm", m_FrameNo, suffix);
     FILE *f = fopen(name, "wb");
     if (!f) {
         return;
     }
     fprintf(f, "P6\n%d %d\n255\n", M20_W, M20_H);
     for (int i = 0; i < M20_W * M20_H; i++) {
-        uint16_t c = M20_Frame[i];
+        uint16_t c = frame[i];
         uint8_t rgb[3] = { (uint8_t)((c >> 11) << 3),
                            (uint8_t)(((c >> 5) & 63) << 2),
                            (uint8_t)((c & 31) << 3) };
@@ -194,6 +193,28 @@ static void save_ppm(void)
     }
     fclose(f);
     fprintf(stderr, "saved %s\n", name);
+}
+
+static void save_ppm(void)
+{
+    save_one(M20_Frame, "");
+    if (HWR_ZMode == 2) {
+        save_one(HWR_SortedFrame(), "-s");
+    }
+    if (HWR_ZMode && getenv("M20_ZDUMP")) {   // the depth buffer, 16-bit PGM
+        char name[32];
+        snprintf(name, sizeof(name), "f%05d-z.pgm", m_FrameNo);
+        FILE *f = fopen(name, "wb");
+        if (f) {
+            fprintf(f, "P5\n%d %d\n65535\n", M20_W, M20_H);
+            const uint16_t *z = HWR_DepthBuffer();
+            for (int i = 0; i < M20_W * M20_H; i++) {
+                uint8_t b[2] = { z[i] >> 8, z[i] & 0xFF };
+                fwrite(b, 2, 1, f);
+            }
+            fclose(f);
+        }
+    }
 }
 
 static bool listed(const char *list, int n)
@@ -231,6 +252,10 @@ static void script_keys(void)
 
 void M20_Present(void)
 {
+    if (HWR_ZMode == 2 && HWR_Stats.zdiff) {
+        fprintf(stderr, "zdiff %d %d\n", m_FrameNo, HWR_Stats.zdiff);
+        HWR_Stats.zdiff = 0;
+    }
     if (m_Steps >= 0) {
         if (listed(m_Shots, m_FrameNo)) {
             save_ppm();
@@ -266,6 +291,12 @@ void M20_PollInput(void)
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F12
             && !e.key.repeat) {
             save_ppm();
+        }
+        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F8
+            && !e.key.repeat) {
+            HWR_ZMode = (HWR_ZMode + 1) % 3;
+            static const char *names[] = { "sorted", "depth buffer", "compare" };
+            fprintf(stderr, "renderer: %s\n", names[HWR_ZMode]);
         }
     }
     int n;
@@ -357,6 +388,9 @@ int main(int argc, char **argv)
     }
     if (getenv("M20_LEVEL")) {
         M20_StartLevel = atoi(getenv("M20_LEVEL"));
+    }
+    if (getenv("M20_ZBUF")) {
+        HWR_ZMode = atoi(getenv("M20_ZBUF"));
     }
     if (getenv("M20_CAMTEST")) {
         M20_CamTest = 1;

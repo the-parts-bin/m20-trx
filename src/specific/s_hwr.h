@@ -53,7 +53,13 @@ typedef struct HWR_STATS {
     int32_t prims_peak;     // the most in one frame so far
     int32_t verts_peak;
     int32_t overflows;      // primitives dropped (the lists were full)
+    int32_t zdiff;          // pixels the depth buffer changed (HWR_ZMode 2)
 } HWR_STATS;
 extern HWR_STATS HWR_Stats;
+
+// 0: sorted only, 1: the depth buffer, 2: both, compared (s_hwr.c)
+extern int HWR_ZMode;
+const uint16_t *HWR_SortedFrame(void);
+const uint16_t *HWR_DepthBuffer(void);
 
 #endif

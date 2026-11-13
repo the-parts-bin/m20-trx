@@ -23,6 +23,7 @@
 
 #include "clock.h"      // CLOCK_PER_MS: core/firmware
 #include "m9b_map.h"
+#include "specific/s_hwr.h"
 #include "specific/s_shell.h"
 
 #include <malloc.h>
@@ -360,11 +361,6 @@ void M20_Fatal(const char *message)
     for (;;) {
     }
 }
-
-typedef struct {
-    int32_t prims, verts, prims_peak, verts_peak, overflows;
-} HWR_STATS_COPY;
-extern HWR_STATS_COPY HWR_Stats;   // specific/s_hwr.h
 
 extern char __heap_start[], __heap_end[];
 
