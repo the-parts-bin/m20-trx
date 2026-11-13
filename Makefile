@@ -178,14 +178,17 @@ CORE    ?= ../m20-system/core
 CORE_FW := $(CORE)/firmware
 CORE_RT := $(CORE)/runtime
 CROSS   ?= riscv64-unknown-elf-
-B       := build-$(RES)
+B       := build-$(RES)$(if $(PROFILE),-prof)
 ARCH    := -march=rv32imf_zba_zicbop_zicsr_zifencei_zicbom_zicboz -mabi=ilp32f
 CFLAGS_BOARD := $(ARCH) -O2 -g --picolibc-buildtype=release -specs=picolibc.specs -std=gnu11 \
                 -ffunction-sections -fdata-sections -fno-strict-aliasing \
                 -DM20 -DM20_BOARD -DM20_W=$(RES_W) -DM20_H=$(RES_H) -DM20_GAMEBUF=$(M20_GAMEBUF) \
                 -DVERSION='"T1M m20"' -DFF_FS_READONLY=0 -Isrc -I$(CORE_FW) -I$(CORE_FW)/fatfs \
                 -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
-                -Wno-pointer-sign -Wno-unused-result -Wno-format -Wno-stringop-truncation -Wno-maybe-uninitialized
+                -Wno-pointer-sign -Wno-unused-result -Wno-format -Wno-stringop-truncation -Wno-maybe-uninitialized \
+                $(if $(PROFILE),-DM9B_PROFILE -DPROF_TOP=0)
+# make PROFILE=1: the PC-sampling profiler (build-WxH-prof/; Ctrl-P on the
+# UART prints it, core's tools/m9bctl.py prof and tools/prof.py read it)
 LDFLAGS_BOARD := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release \
                  -Wl,--defsym=__stack_size=0x20000 -Wl,--gc-sections -Wl,-Map=$(B)/tomb1.map \
                  -T$(CORE_RT)/m9b.ld

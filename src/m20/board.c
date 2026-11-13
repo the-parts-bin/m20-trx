@@ -301,6 +301,11 @@ static void uart_keys(uint32_t now_ms)
                 : c == 'C' ? HID_RIGHT : c == 'D' ? HID_LEFT : 0;
         } else if (c == 0x1B) {
             m_UartEsc = 1;
+#ifdef M9B_PROFILE
+        } else if (c == 0x10) {   // m9bctl.py prof: the PC samples so far
+            extern void prof_report(void);
+            prof_report();
+#endif
         } else if (c == 0x1C) {   // m9bctl.py shot: the frame on screen
             if (m_Shown >= 0) {
                 m20_screenshot16(M20_W, M20_H, m_Disp[m_Shown], M20_W);
