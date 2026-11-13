@@ -63,7 +63,13 @@ char **M20_Argv = m_ArgvMem;
 int M20_StartLevel = -1;
 int M20_CamTest;
 uint32_t M20_ScriptKeys;
+#ifdef M20_TIMEDEMO
+// make TIMEDEMO=1: one game step per frame (s_clock.c), so that the title's
+// demos draw the same frames each run; their time at each level load
+bool M20_Scripted = true;
+#else
 bool M20_Scripted;
+#endif
 
 extern void trap_entry(void);       // core/runtime/trap_entry.S
 extern uint32_t misaligned_traps;   // core/runtime/trap.c: emulated
@@ -156,6 +162,47 @@ static void video_init(void)
 }
 
 static uint32_t m_FpsStart, m_FpsFrames;
+static int m_Reserved = -1;   // the display buffer holding the menus' background
+
+// A buffer neither shown, waiting nor reserved; -1 if there's none
+static int free_buffer(void)
+{
+    for (int n = 0; n < NBUF; n++) {
+        if (n != m_Shown && n != m_Pending && n != m_Reserved
+            && n != m_Drawing) {
+            return n;
+        }
+    }
+    return -1;
+}
+
+// The menus' background in one of the display buffers (the one holding
+// keep, if it's one: the inventory's frame stays where it was drawn); the
+// other two take the drawing until it's released
+uint16_t *M20_PictureBuffer(const uint16_t *keep)
+{
+    if (m_Reserved >= 0 && (!keep || keep == m_Disp[m_Reserved])) {
+        return m_Disp[m_Reserved];
+    }
+    int r = -1;
+    for (int b = 0; b < NBUF; b++) {
+        if (keep == m_Disp[b] && b != m_Drawing) {
+            r = b;
+        }
+    }
+    while (r < 0) {   // (one not on the screen, to be written)
+        uint32_t m = irq_off();
+        r = free_buffer();
+        irq_restore(m);
+    }
+    m_Reserved = r;
+    return m_Disp[r];
+}
+
+void M20_PictureRelease(void)
+{
+    m_Reserved = -1;
+}
 
 void M20_Present(void)
 {
@@ -163,11 +210,16 @@ void M20_Present(void)
     cache_clean(m_Disp[b], 2u * M20_W * M20_H);
     uint32_t m = irq_off();
     m_Pending = b;
-    int n = 0;
-    while (n == m_Shown || n == m_Pending) {
-        n++;
-    }
     irq_restore(m);
+    int n;
+    do {   // (with one reserved, until the vertical blank frees one)
+        m = irq_off();
+        n = 0;
+        while (n < NBUF && (n == m_Shown || n == m_Pending || n == m_Reserved)) {
+            n++;
+        }
+        irq_restore(m);
+    } while (n >= NBUF);
     M20_LastFrame = m_Disp[b];
     m_Drawing = n;
     M20_Frame = m_Disp[n];
@@ -190,6 +242,27 @@ void M20_Present(void)
                    (unsigned)(st->waits / f),
                    (unsigned)(st->wait_clk / f / CLOCK_PER_MS),
                    (unsigned)(st->wait_clk / f % CLOCK_PER_MS * 10 / CLOCK_PER_MS));
+        }
+        {   // the engine's counters (core/rtl/span_engine.v): pixels, texel
+            // cache misses, busy clocks
+            volatile uint32_t *sp = (volatile uint32_t *)0x490000u;
+            static uint32_t p0, m0, b0;
+            uint32_t pp = sp[21], mm = sp[22], bb = sp[23], f = m_FpsFrames;
+            uint32_t el = (now - m_FpsStart) / 1000u;   // ms
+            printf("  engine hw: %u pixels, %u misses per frame, busy %u%%\n",
+                   (unsigned)((pp - p0) / f), (unsigned)((mm - m0) / f),
+                   (unsigned)((bb - b0) / (CLOCK_PER_MS / 100u) / (el ? el : 1)));
+            p0 = pp;
+            m0 = mm;
+            b0 = bb;
+        }
+        {
+            uint32_t f = m_FpsFrames, el = now - m_FpsStart;
+            printf("  per frame: %u us; list %u us, drawing %u us, the rest %u us\n",
+                   (unsigned)(el / f), (unsigned)(HWR_Times.build_us / f),
+                   (unsigned)(HWR_Times.draw_us / f),
+                   (unsigned)((el - HWR_Times.build_us - HWR_Times.draw_us) / f));
+            HWR_Times.build_us = HWR_Times.draw_us = 0;
         }
         memset(&HWR_SpanStats, 0, sizeof(HWR_SpanStats));
         m_FpsStart = now;
@@ -317,6 +390,9 @@ static void uart_keys(uint32_t now_ms)
             extern void prof_report(void);
             prof_report();
 #endif
+        } else if (c == 0x1A) {   // Ctrl-Z: the engine's depth test off and on
+            HWR_ZEngine = !HWR_ZEngine;
+            printf("engine depth test %s\n", HWR_ZEngine ? "on" : "off");
         } else if (c == 0x0B) {   // Ctrl-K: the span engine off and on
             HWR_SpanOn = !HWR_SpanOn;
             printf("span engine %s\n", HWR_SpanOn ? "on" : "off");
@@ -385,6 +461,20 @@ extern char __heap_start[], __heap_end[];
 
 void S_Shell_ReportMemory(const char *what)
 {
+#ifdef M20_TIMEDEMO
+    {
+        static uint32_t frames0, t0;
+        uint32_t t = M20_TimeUs(), n = m_Frames - frames0;
+        if (n) {
+            printf("timedemo: %u frames in %u ms, %u.%u fps\n", (unsigned)n,
+                   (unsigned)((t - t0) / 1000u),
+                   (unsigned)(n * 1000000ull / (t - t0)),
+                   (unsigned)(n * 10000000ull / (t - t0) % 10u));
+        }
+        frames0 = m_Frames;
+        t0 = t;
+    }
+#endif
     struct mallinfo mi = mallinfo();
     printf("render: peak %d primitives, %d vertices, %d dropped\n",
            (int)HWR_Stats.prims_peak, (int)HWR_Stats.verts_peak,

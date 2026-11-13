@@ -1177,6 +1177,12 @@ typedef struct PHD_VBUF {
     int16_t g;
     uint16_t u;
     uint16_t v;
+    // m20: the projection in float, unclamped (xs, ys are clamped to 16
+    // bits): screen x, y and 1/zv, for the renderer (s_hwr.c), when zv is
+    // in front of the near plane
+    float fx;
+    float fy;
+    float iz;
 } PHD_VBUF;
 
 typedef struct PHD_UV {

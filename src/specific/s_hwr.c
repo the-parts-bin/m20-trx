@@ -37,6 +37,7 @@
 #endif
 
 HWR_STATS HWR_Stats;
+HWR_TIMES HWR_Times;
 bool HWR_RoomMode;   // S_InsertRoom's faces (3d_gen.c)
 
 typedef enum {
@@ -86,36 +87,62 @@ static int32_t m_NumVerts;
 static uint16_t m_Shade[32][256];       // light step, colour -> RGB565
 static uint16_t m_ShadeWater[32][256];
 static RGBF m_WaterColor = { 1.0f, 1.0f, 1.0f };
-static uint16_t m_Picture[M20_W * M20_H];   // the background (title, menus)
+// The background (the title's picture, the inventory's frame): a buffer of
+// the platform's (on the board one of the display buffers, reserved while
+// it's used: M20_PictureBuffer), released when two frames went by without
+// it
+static uint16_t *m_Picture;
 static bool m_PictureValid;
+static int32_t m_PictureUnused;   // frames presented without it
 
 static int32_t m_ClipL, m_ClipT, m_ClipR, m_ClipB;   // inclusive
 
-// The depth buffer (HWR_ZMode 1, and 2 for the comparison): 16 bits a
-// pixel, 1/z scaled so that the near plane is 65535 (bigger is nearer; as
-// Quake's, which the span engine writes). 1/z is linear on the screen, so
-// it steps per pixel exactly, in 4.12 fixed point here. Opaque faces and
-// sprites test and write it (a transparent texel neither), shadows and the
-// translucent faces only test it (shadows a little nearer: they lie on the
-// floor), the 2D doesn't use it. The sort stays, for the translucent faces.
-// HWR_ZMode 2 draws each frame both ways, shows the depth buffer's and
-// counts the pixels that differ (HWR_Stats.zdiff).
+// The depth buffer: 16 bits a pixel, Z_SCALE x near / z (bigger is nearer;
+// the span engine's format: the top half of its 1/z, 2^31 x Z_SCALE / 32768
+// x near / z, s_hwr_span.h). 1/z is linear on the screen, so it steps per
+// pixel exactly, in 4.12 fixed point here. Opaque faces and sprites test and
+// write it (a transparent texel neither), shadows and the translucent faces
+// only test it (shadows a little nearer: they lie on the floor), the 2D
+// doesn't use it.
+// Who uses it: with HWR_ZEngine the span engine tests it as it draws the
+// opaque faces, given as the game makes them (no sort), and the CPU draws
+// the rest after it, sorted, testing it too; HWR_ZMode 1 is the CPU's alone
+// (the reference), 2 draws each frame sorted and with it and counts the
+// pixels that differ (HWR_Stats.zdiff, the host).
 #ifndef M20_ZBUF
-#ifdef M20_BOARD
-#define M20_ZBUF 0
-#else
 #define M20_ZBUF 1
-#endif
 #endif
 int HWR_ZMode;
 #if M20_ZBUF
-static uint16_t m_ZBuf[M20_W * M20_H];
+static uint16_t m_ZBuf[M20_W * M20_H] __attribute__((aligned(64)));
+#ifndef M20_BOARD
 static uint16_t m_Save[M20_W * M20_H], m_Sorted[M20_W * M20_H];
+#endif
 #endif
 static bool m_ZOn;          // this pass tests the depth buffer
 static float m_ZScale;      // 1/z to depth, 4.12
+#define Z_SCALE (0.99f * 32768.0f)
 #define Z_FRAC 12
 #define Z_BIAS(z) ((z) + ((z) >> 5))
+static bool m_Stream;       // the engine has this frame's opaque faces (HWR_ZEngine)
+
+static void ZScaleUpdate(void)
+{
+    m_ZScale = (float)phd_GetNearZ() * Z_SCALE * (1 << Z_FRAC);
+}
+
+// A cache line of zeros each on the board (Zicboz: no read from SDRAM first)
+static void ZeroBuffer(uint16_t *p)
+{
+#ifdef M20_BOARD
+    for (uintptr_t a = (uintptr_t)p; a < (uintptr_t)p + M20_W * M20_H * 2;
+         a += 64u) {
+        asm volatile("cbo.zero (%0)" ::"r"(a) : "memory");
+    }
+#else
+    memset(p, 0, M20_W * M20_H * 2);
+#endif
+}
 
 // ---------------------------------------------------------------------
 // Palette and shading
@@ -188,13 +215,17 @@ void HWR_SwitchResolution()
 
 void HWR_ClearSurfaceDepth()
 {
-    memset(M20_Frame, 0, M20_W * M20_H * 2);
+    ZeroBuffer(M20_Frame);
 }
 
 void HWR_DumpScreen()
 {
-    if (m_NumPrims) {
+    if (m_NumPrims || m_Stream) {
         HWR_OutputPolyList();
+    }
+    if (m_PictureValid && ++m_PictureUnused > 2) {
+        m_PictureValid = false;
+        M20_PictureRelease();
     }
     M20_Present();
 }
@@ -209,22 +240,23 @@ void HWR_FadeWait()
     HWR_DumpScreen();
 }
 
-static uint16_t *PictureBuffer()
-{
-    return m_Picture;
-}
-
-// The frame as the background (the inventory's, over the game)
+// The frame as the background (the inventory's, over the game): on the
+// board the display buffer it's in, kept
 void HWR_CopyPicture()
 {
-    memcpy(PictureBuffer(), M20_LastFrame, M20_W * M20_H * 2);
+    m_Picture = M20_PictureBuffer(M20_LastFrame);
+    if (m_Picture != M20_LastFrame) {
+        memcpy(m_Picture, M20_LastFrame, M20_W * M20_H * 2);
+    }
     m_PictureValid = true;
+    m_PictureUnused = 0;
 }
 
 // A picture as the background, fitted to the frame
 void HWR_DownloadPicture(const PICTURE *pic)
 {
-    uint16_t *dst = PictureBuffer();
+    uint16_t *dst = m_Picture = M20_PictureBuffer(NULL);
+    m_PictureUnused = 0;
     memset(dst, 0, M20_W * M20_H * 2);
     int32_t w = M20_W, h = M20_H;
     if (pic->width * M20_H > pic->height * M20_W) {
@@ -248,6 +280,7 @@ void HWR_ShowPicture()
 {
     if (m_PictureValid) {
         memcpy(M20_Frame, m_Picture, M20_W * M20_H * 2);
+        m_PictureUnused = 0;
     } else {
         HWR_ClearSurfaceDepth();
     }
@@ -260,6 +293,18 @@ void HWR_InitPolyList()
 {
     m_NumPrims = 0;
     m_NumVerts = 0;
+    HWR_Times.list_start = M20_TimeUs();
+    m_ClipL = 0;
+    m_ClipT = 0;
+    m_ClipR = M20_W - 1;
+    m_ClipB = M20_H - 1;
+    m_Stream = false;
+    ZScaleUpdate();
+#if M20_ZBUF
+    if (HWR_ZMode || (HWR_SpanOn && HWR_ZEngine)) {
+        ZeroBuffer(m_ZBuf);
+    }
+#endif
 }
 
 static PRIM *AddPrim(PRIM_TYPE type, int32_t n, int32_t key, HVERT **verts)
@@ -292,22 +337,15 @@ typedef struct CVERT {
 
 #define MAX_CVERTS 16
 
-// The game's projection clamps vertices to +-32760 (and its integer
-// division rounds): a vertex off the screen (clip bits 0..3) is projected
-// again here from its view position, unclamped, so that a face that
-// reaches far off the screen keeps its shape (a floor seen edge on, its
-// near vertices beside the camera)
+// A vertex from the game's transform: its float projection (PHD_VBUF.fx,
+// fy, iz: unclamped, unlike xs and ys, so that a face that reaches far off
+// the screen keeps its shape: a floor seen edge on, its near vertices
+// beside the camera)
 static void SetVert(CVERT *c, const PHD_VBUF *v, const PHD_UV *uv)
 {
-    c->iz = 1.0f / (float)v->zv;
-    if (v->clip & 15) {
-        float k = (float)PhdPersp * c->iz;
-        c->x = v->xv * k + ViewPort_GetCenterX();
-        c->y = v->yv * k + ViewPort_GetCenterY();
-    } else {
-        c->x = v->xs;
-        c->y = v->ys;
-    }
+    c->iz = v->iz;   // (the game's transform, 3d_gen.c, projects in float)
+    c->x = v->fx;
+    c->y = v->fy;
     c->g = v->g;
     if (uv) {
         c->uz = ((uv->u1 & 0xFF00) + 0x80) * c->iz;
@@ -454,6 +492,8 @@ static int32_t FaceKey(PHD_VBUF *const *vb, int32_t n)
 }
 
 static bool m_Opaque;   // the face being inserted has an opaque texture
+static void SpanBegin(void);          // s_hwr_span.h
+static bool SpanFace(const struct PRIM *p);
 
 // The face's vertices, clipped, into the list (x and y in 1/16 pixel)
 static void EmitFace(PRIM_TYPE type, CVERT *c, int32_t n, int32_t key, uint16_t tex)
@@ -476,6 +516,19 @@ static void EmitFace(PRIM_TYPE type, CVERT *c, int32_t n, int32_t key, uint16_t 
         dst[i].uz = c[i].uz;
         dst[i].vz = c[i].vz;
         dst[i].g = (int16_t)c[i].g;
+    }
+    // the engine tests the depth: an opaque face straight to it
+    if (HWR_SpanOn && HWR_ZEngine && type == PRIM_GT && m_Opaque
+        && !p->water && HWR_ZMode != 2) {
+        if (!m_Stream) {
+            m_Stream = true;
+            SpanBegin();
+        }
+        if (SpanFace(p)) {
+            m_NumPrims--;
+            m_NumVerts -= n;
+        }
+        return;
     }
 }
 
@@ -1154,6 +1207,11 @@ static void DrawPass(const uint16_t *order, int32_t n, bool z);
 
 void HWR_OutputPolyList()
 {
+    uint32_t t_out = M20_TimeUs();
+    if (HWR_Times.list_start) {
+        HWR_Times.build_us += t_out - HWR_Times.list_start;
+        HWR_Times.list_start = 0;
+    }
     int32_t n = m_NumPrims;
     HWR_Stats.prims = n;
     HWR_Stats.verts = m_NumVerts;
@@ -1189,10 +1247,17 @@ void HWR_OutputPolyList()
     m_ClipT = 0;
     m_ClipR = M20_W - 1;
     m_ClipB = M20_H - 1;
-    m_ZScale = (float)phd_GetNearZ() * 65535.0f * (1 << Z_FRAC);
+    ZScaleUpdate();
 
 #if M20_ZBUF
-    if (HWR_ZMode == 2) {
+    if (m_Stream) {
+        // the engine drew the opaque faces, testing the depth; the rest
+        // after it, testing the depth it left
+        SpanEnd();
+        m_Stream = false;
+        DrawPass(src, n, true);
+    } else if (HWR_ZMode == 2) {
+#ifndef M20_BOARD
         memcpy(m_Save, M20_Frame, sizeof(m_Save));
         DrawPass(src, n, false);
         memcpy(m_Sorted, M20_Frame, sizeof(m_Sorted));
@@ -1203,6 +1268,7 @@ void HWR_OutputPolyList()
             diff += m_Sorted[i] != M20_Frame[i];
         }
         HWR_Stats.zdiff = diff;
+#endif
     } else {
         DrawPass(src, n, HWR_ZMode == 1);
     }
@@ -1212,14 +1278,17 @@ void HWR_OutputPolyList()
 
     m_NumPrims = 0;
     m_NumVerts = 0;
+    HWR_Times.draw_us += M20_TimeUs() - t_out;
 }
 
-#if M20_ZBUF
+#if M20_ZBUF && !defined(M20_BOARD)
 // The sorted frame of the last comparison (HWR_ZMode 2), for the harness
 const uint16_t *HWR_SortedFrame(void)
 {
     return m_Sorted;
 }
+#endif
+#if M20_ZBUF
 
 const uint16_t *HWR_DepthBuffer(void)
 {
@@ -1229,12 +1298,7 @@ const uint16_t *HWR_DepthBuffer(void)
 
 static void DrawPass(const uint16_t *order, int32_t n, bool z)
 {
-    m_ZOn = z;
-#if M20_ZBUF
-    if (z) {
-        memset(m_ZBuf, 0, sizeof(m_ZBuf));
-    }
-#endif
+    m_ZOn = z;   // (the depth buffer was cleared by HWR_InitPolyList)
     // the span engine: the opaque textured faces above water (not with the
     // depth buffer: that's the CPU's, a reference)
     bool span = HWR_SpanOn && !z;

@@ -34,8 +34,10 @@
 
 #ifdef M20_BOARD
 bool HWR_SpanOn = true;
+bool HWR_ZEngine = false;   // (a bitstream with the engine's depth test)
 #else
 bool HWR_SpanOn = false;
+bool HWR_ZEngine = true;
 #endif
 HWR_SPAN_STATS HWR_SpanStats;
 
@@ -106,12 +108,21 @@ static void CacheClean(const void *p, uint32_t n)
 }
 // The C model's pixels
 static uint16_t *m_PixFb;
+static uint16_t *m_PixZb;   // (NULL: no depth test)
 static const uint8_t *m_PixTex;
 static const uint8_t *m_PixLight;
+// (with the depth test, as the engine's: a pixel at least as near as the
+// depth there is drawn, and its depth written)
 #define SC_LPIXEL(i, tex_off, scale, z16)                                      \
     do {                                                                       \
-        uint8_t t_ = m_PixTex[tex_off];                                        \
-        m_PixFb[i] = sc_shade(m_Pal888[t_], t_, scale);                        \
+        uint16_t zq_ = (uint16_t)(z16);                                        \
+        if (!m_PixZb || zq_ >= m_PixZb[i]) {                                   \
+            uint8_t t_ = m_PixTex[tex_off];                                    \
+            m_PixFb[i] = sc_shade(m_Pal888[t_], t_, scale);                    \
+            if (m_PixZb) {                                                     \
+                m_PixZb[i] = zq_;                                              \
+            }                                                                  \
+        }                                                                      \
     } while (0)
 #define SC_PIXEL(i, tex_off, z16) ((void)0)
 #define SC_LIGHTMAP(k) ((int32_t)m_PixLight[k])
@@ -249,6 +260,9 @@ static void SpanBegin(void)
 #ifdef M20_BOARD
     HwWait();
     CacheFlush(M20_Frame, M20_W * M20_H * 2);
+    if (m_Stream) {
+        CacheFlush(m_ZBuf, M20_W * M20_H * 2);
+    }
     if (m_Pal888Changed) {
         SPAN_HW[24] = 0;
         for (int32_t k = 0; k < 256; k++) {
@@ -258,8 +272,15 @@ static void SpanBegin(void)
     }
     SPAN_HW[16] = SDRAM_OFF(M20_Frame);
     SPAN_HW[17] = M20_W;
-    SPAN_HW[18] = SDRAM_OFF(m_ZDummy);
-    SPAN_HW[19] = 0;
+    if (m_Stream) {   // the depth buffer, tested (direct register 6, bit 0)
+        SPAN_HW[18] = SDRAM_OFF(m_ZBuf);
+        SPAN_HW[19] = M20_W;
+        SPAN_HW[22] = 1;
+    } else {
+        SPAN_HW[18] = SDRAM_OFF(m_ZDummy);
+        SPAN_HW[19] = 0;
+        SPAN_HW[22] = 0;
+    }
 #endif
 }
 
@@ -323,16 +344,18 @@ static bool SpanFace(const PRIM *p)
         return false;
     }
 
-    // Each vertex: the screen (1/16 pixel), 1/z (world units: the view's
-    // z >> W2V_SHIFT, so that 1/z suits the engine's 2^31 scale), the
-    // texel (8.8, texel centres), the light
+    // Each vertex: the screen (1/16 pixel), 1/z scaled so that the near
+    // plane is just below 1 (the engine's 1/z is 2^31 times it, and its
+    // depth the top half: s_hwr.c's Z_SCALE x near / z), the texel (8.8,
+    // texel centres), the light
+    const float m_WScale = (float)phd_GetNearZ() * (Z_SCALE / 32768.0f);
     float X[MAX_CVERTS], Y[MAX_CVERTS], W[MAX_CVERTS], S[MAX_CVERTS],
         T[MAX_CVERTS];
     float smin = 1e9f, tmin = 1e9f, smax = -1e9f, tmax = -1e9f;
     for (int32_t i = 0; i < n; i++) {
         X[i] = v[i].x * (1.0f / 16.0f);
         Y[i] = v[i].y * (1.0f / 16.0f);
-        W[i] = (float)(1 << W2V_SHIFT) * v[i].iz;
+        W[i] = m_WScale * v[i].iz;
         float rz = (1.0f / 256.0f) / v[i].iz;
         S[i] = v[i].uz * rz;
         T[i] = v[i].vz * rz;
@@ -495,6 +518,7 @@ static bool SpanFace(const PRIM *p)
 #else
     m_PixTex = tile;
     m_PixLight = lm;
+    m_PixZb = NULL;
 #endif
 
     // The rows: the CPU's edge walk, one span each
@@ -515,6 +539,9 @@ static bool SpanFace(const PRIM *p)
         SPAN_HW[0] = (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0;
 #else
         m_PixFb = M20_Frame + y * M20_W + x0;
+#if M20_ZBUF
+        m_PixZb = m_Stream ? m_ZBuf + y * M20_W + x0 : NULL;
+#endif
         sc_span_lit(&m_Eng, x0, y, xe - x0);
 #endif
     }

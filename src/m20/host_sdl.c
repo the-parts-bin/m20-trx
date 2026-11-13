@@ -252,6 +252,16 @@ static void script_keys(void)
     }
 }
 
+uint16_t *M20_PictureBuffer(const uint16_t *keep)
+{
+    static uint16_t picture[M20_W * M20_H];
+    return picture;
+}
+
+void M20_PictureRelease(void)
+{
+}
+
 void M20_Present(void)
 {
     if (HWR_ZMode == 2 && HWR_Stats.zdiff) {
@@ -293,6 +303,11 @@ void M20_PollInput(void)
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F12
             && !e.key.repeat) {
             save_ppm();
+        }
+        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F6
+            && !e.key.repeat) {
+            HWR_ZEngine = !HWR_ZEngine;
+            fprintf(stderr, "engine depth test: %s\n", HWR_ZEngine ? "on" : "off");
         }
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F7
             && !e.key.repeat) {
@@ -398,6 +413,9 @@ int main(int argc, char **argv)
     }
     if (getenv("M20_SPAN")) {
         HWR_SpanOn = atoi(getenv("M20_SPAN")) != 0;
+    }
+    if (getenv("M20_ZENGINE")) {
+        HWR_ZEngine = atoi(getenv("M20_ZENGINE")) != 0;
     }
     if (getenv("M20_ZBUF")) {
         HWR_ZMode = atoi(getenv("M20_ZBUF"));

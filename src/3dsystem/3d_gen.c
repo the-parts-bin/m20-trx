@@ -431,8 +431,15 @@ const int16_t *calc_object_vertices(const int16_t *obj_ptr)
         } else {
             clip_flags = 0;
 
-            int32_t xs = ViewPort_GetCenterX() + xv / (zv / PhdPersp);
-            int32_t ys = ViewPort_GetCenterY() + yv / (zv / PhdPersp);
+            // m20: in float, one division (the integer xs, ys from it)
+            float iz = 1.0f / (float)zv, k = (float)PhdPersp * iz;
+            float fx = ViewPort_GetCenterX() + xv * k;
+            float fy = ViewPort_GetCenterY() + yv * k;
+            PhdVBuf[i].fx = fx;
+            PhdVBuf[i].fy = fy;
+            PhdVBuf[i].iz = iz;
+            int32_t xs = fx < -32768.0f ? -32768 : fx > 32767.0f ? 32767 : (int32_t)fx;
+            int32_t ys = fy < -32768.0f ? -32768 : fy > 32767.0f ? 32767 : (int32_t)fy;
 
             if (xs < PhdLeft) {
                 if (xs < -32760) {
@@ -548,12 +555,23 @@ const int16_t *calc_roomvert(const int16_t *obj_ptr)
                 }
             }
 
-            int32_t xs = ViewPort_GetCenterX() + xv / (zv / PhdPersp);
-            int32_t ys = ViewPort_GetCenterY() + yv / (zv / PhdPersp);
+            // m20: in float, one division (the integer xs, ys from it)
+            float iz = 1.0f / (float)zv, k = (float)PhdPersp * iz;
+            float fx = ViewPort_GetCenterX() + xv * k;
+            float fy = ViewPort_GetCenterY() + yv * k;
+            int32_t xs = fx < -32768.0f ? -32768 : fx > 32767.0f ? 32767 : (int32_t)fx;
+            int32_t ys = fy < -32768.0f ? -32768 : fy > 32767.0f ? 32767 : (int32_t)fy;
             if (IsWibbleEffect) {
-                xs += WibbleTable[(ys + WibbleOffset) & 0x1F];
-                ys += WibbleTable[(xs + WibbleOffset) & 0x1F];
+                int32_t wx = WibbleTable[(ys + WibbleOffset) & 0x1F];
+                xs += wx;
+                int32_t wy = WibbleTable[(xs + WibbleOffset) & 0x1F];
+                ys += wy;
+                fx += wx;
+                fy += wy;
             }
+            PhdVBuf[i].fx = fx;
+            PhdVBuf[i].fy = fy;
+            PhdVBuf[i].iz = iz;
 
             if (xs < PhdLeft) {
                 if (xs < -32760) {

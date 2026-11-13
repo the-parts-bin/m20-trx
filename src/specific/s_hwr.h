@@ -57,6 +57,16 @@ typedef struct HWR_STATS {
 } HWR_STATS;
 extern HWR_STATS HWR_Stats;
 
+// Where a frame's time goes (microseconds, summed): building the list (from
+// HWR_InitPolyList to HWR_OutputPolyList: the game's transforms and the
+// faces' setup) and drawing it
+typedef struct HWR_TIMES {
+    uint32_t list_start;
+    uint32_t build_us;
+    uint32_t draw_us;
+} HWR_TIMES;
+extern HWR_TIMES HWR_Times;
+
 // The span engine (s_hwr_span.h): on for the opaque textured faces
 typedef struct HWR_SPAN_STATS {
     uint32_t faces;         // faces it drew
@@ -65,6 +75,7 @@ typedef struct HWR_SPAN_STATS {
     uint32_t wait_clk;      // the clocks it waited (the board)
 } HWR_SPAN_STATS;
 extern bool HWR_SpanOn;
+extern bool HWR_ZEngine;   // the engine tests the depth (the opaque faces unsorted)
 extern HWR_SPAN_STATS HWR_SpanStats;
 void HWR_SpanLevel(int32_t pages);
 

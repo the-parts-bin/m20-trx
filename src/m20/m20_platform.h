@@ -24,6 +24,12 @@ void M20_Present(void);
 // The frame last presented (the inventory's background is copied from it)
 extern uint16_t *M20_LastFrame;
 
+// A frame's worth of memory for the menus' background, kept until released:
+// the display buffer holding keep, if it's one, or another (on the board one
+// of the three display buffers: drawing goes on in the other two)
+uint16_t *M20_PictureBuffer(const uint16_t *keep);
+void M20_PictureRelease(void);
+
 // Reads the keyboard into M20_Keys: one byte per HID usage (USB HID usage
 // tables, keyboard page; SDL scancodes are the same numbers), non-zero while
 // held. The modifiers are usages 0xE0..0xE7 (left ctrl, shift, alt, GUI,
