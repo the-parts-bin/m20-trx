@@ -26,4 +26,4 @@ Release/
 build-*/
 
 # The game's data (data/README.md)
-/data/DATA/
+/data/DATA
