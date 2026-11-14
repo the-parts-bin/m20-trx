@@ -280,11 +280,11 @@ void M20_Present(void)
             {   // (CPU cycles to us)
                 uint32_t k = f * (CLOCK_PER_MS / 1000u);
                 printf("  insert %u us (to the engine %u us: lightmap %u, registers %u, "
-                       "%u rows %u us); flushes %u us per frame\n",
+                       "%u rows %u us; the CPU's rows flushed %u us); flushes %u us per frame\n",
                        (unsigned)(HWR_Times.insert_clk / k), (unsigned)(HWR_Times.stream_clk / k),
                        (unsigned)(HWR_Times.lm_clk / k), (unsigned)(HWR_Times.regs_clk / k),
                        (unsigned)(HWR_Times.rows / f), (unsigned)(HWR_Times.fifo_clk / k),
-                       (unsigned)(HWR_Times.flush_us / k));
+                       (unsigned)(HWR_Times.rowflush_clk / k), (unsigned)(HWR_Times.flush_us / k));
                 printf("  SpanFaceV: planes %u us, fixed point %u us, light fit %u us, rows %u us\n",
                        (unsigned)(HWR_Times.sec[0] / k), (unsigned)(HWR_Times.sec[1] / k),
                        (unsigned)(HWR_Times.sec[2] / k), (unsigned)(HWR_Times.sec[3] / k));
@@ -293,6 +293,7 @@ void M20_Present(void)
 #endif
             HWR_Times.insert_clk = HWR_Times.stream_clk = HWR_Times.fifo_clk = 0;
             HWR_Times.lm_clk = HWR_Times.regs_clk = HWR_Times.rows = HWR_Times.flush_us = 0;
+            HWR_Times.rowflush_clk = 0;
         }
         memset(&HWR_SpanStats, 0, sizeof(HWR_SpanStats));
         m_FpsStart = now;

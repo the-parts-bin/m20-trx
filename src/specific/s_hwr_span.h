@@ -195,7 +195,7 @@ static sc_regs_t m_Eng;
 // ---------------------------------------------------------------------
 // The exponent that fits the largest |o + x dx + y dy| over the screen into
 // 30 bits (its extremes are at the corners)
-static int32_t SpExponent(float o, float dx, float dy)
+static inline int32_t SpExponent(float o, float dx, float dy)
 {
     // (the corners are o + {0, a} + {0, b}: the largest and smallest from
     // a's and b's signs)
@@ -224,7 +224,13 @@ static int32_t SpFix(float x, int32_t e)
         uint32_t u;
         float f;
     } scale = { (uint32_t)(e + 127) << 23 };
+#ifdef M20_BOARD
+    int32_t r;   // (lrintf: the same instruction, without the call)
+    asm("fcvt.w.s %0, %1" : "=r"(r) : "f"(x * scale.f));
+    return r;
+#else
     return (int32_t)lrintf(x * scale.f);
+#endif
 }
 
 // The value at the screen's corner, from the centre, in wrapping integers
@@ -592,25 +598,23 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
         }
     }
     HWR_TADD(sec[2], ts);
+    // The lightmap: the plane sampled every 2^k texels. Bilinear, any grid
+    // gives the plane back, so the coarsest (3 x 3 at most: lshift is up
+    // to 7) unless the plane leaves 0..255 there; then the finer grid of up
+    // to 8 x 8, clamped.
     int32_t ext = umax - umin > vmax - vmin ? umax - umin : vmax - vmin, k = 0;
-    while ((ext >> k) > 6) {
-        k++;   // up to 8 x 8 samples
+    while ((ext >> k) > 1 && k < 7) {
+        k++;
     }
-    int32_t lw = ((umax - umin) >> k) + 2, lh = ((vmax - vmin) >> k) + 2;
-    uint32_t bytes = (uint32_t)(lw * lh + 63) & ~63u;
-    if (m_LmPos + bytes > LM_RING) {   // full: all loaded once the engine is idle
-        HwWait();
-        m_LmPos = 0;
-    }
-    uint32_t tlm = HWR_CLK();
-    uint8_t *lm = m_LmRing + m_LmPos;
-    m_LmPos += bytes;
-    {   // (in 16.16, stepped)
-        int32_t q0 = (int32_t)(la * 65536.0f) + 32768;
-        int32_t qs = (int32_t)(lb * (float)(65536 << k));
-        int32_t qt = (int32_t)(lc * (float)(65536 << k));
-        uint8_t *row = lm;
-        // (a plane: its extremes at the corners; clamped only if they're out)
+    int32_t lw, lh, q0, qs, qt;
+    bool clamp = false;
+    for (;;) {   // (in 16.16, stepped)
+        lw = ((umax - umin) >> k) + 2;
+        lh = ((vmax - vmin) >> k) + 2;
+        q0 = (int32_t)(la * 65536.0f) + 32768;
+        qs = (int32_t)(lb * (float)(65536 << k));
+        qt = (int32_t)(lc * (float)(65536 << k));
+        // (a plane: its extremes at the corners)
         int32_t c1 = q0 + qs * (lw - 1), c2 = q0 + qt * (lh - 1);
         int32_t c3 = c1 + qt * (lh - 1);
         int32_t qmin = q0 < c1 ? q0 : c1, qmax = q0 < c1 ? c1 : q0;
@@ -619,6 +623,32 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
         qmin = c3 < qmin ? c3 : qmin;
         qmax = c3 > qmax ? c3 : qmax;
         if (qmin >= 0 && qmax < (256 << 16)) {
+            break;
+        }
+        if ((ext >> k) <= 6) {   // the finer grid
+            k = 0;
+            while ((ext >> k) > 6) {
+                k++;   // up to 8 x 8 samples
+            }
+            if (!clamp) {
+                clamp = true;
+                continue;
+            }
+        }
+        clamp = true;
+        break;
+    }
+    uint32_t bytes = (uint32_t)(lw * lh + 63) & ~63u;
+    if (m_LmPos + bytes > LM_RING) {   // full: all loaded once the engine is idle
+        HwWait();
+        m_LmPos = 0;
+    }
+    uint32_t tlm = HWR_CLK();
+    uint8_t *lm = m_LmRing + m_LmPos;
+    m_LmPos += bytes;
+    {
+        uint8_t *row = lm;
+        if (!clamp) {
             for (int32_t j = 0; j < lh; j++, q0 += qt, row += lw) {
                 int32_t q = q0;
                 for (int32_t i = 0; i < lw; i++, q += qs) {
@@ -641,10 +671,12 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     const uint8_t *tile = (const uint8_t *)TexturePagePtrs[tex];
 #ifdef M20_BOARD
     if (m_CpuY1 >= m_CpuY0) {   // the CPU's rows to SDRAM first
+        uint32_t tcf = HWR_CLK();
         CacheFlush(M20_Frame + m_CpuY0 * M20_W,
                    (uint32_t)(m_CpuY1 - m_CpuY0 + 1) * M20_W * 2);
         m_CpuY0 = M20_H;
         m_CpuY1 = -1;
+        HWR_TADD(rowflush_clk, tcf);
     }
     CacheClean(lm, (uint32_t)(lw * lh));
     uint32_t lm_off = SDRAM_OFF(lm), tile_off = SDRAM_OFF(tile);
@@ -691,8 +723,11 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     // The rows: the edge walk, one span each
     XEDGE el[MAX_CVERTS], er[MAX_CVERTS];
     int32_t nl = 0, nr = 0, ytop = M20_H, ybot = 0;
+    int32_t pxmin = v[0].px, pxmax = v[0].px;
     for (int32_t i = 0; i < n; i++) {
         const SVERT *a = &v[i], *b = &v[i + 1 < n ? i + 1 : 0];
+        pxmin = a->px < pxmin ? a->px : pxmin;
+        pxmax = a->px > pxmax ? a->px : pxmax;
         if (a->py == b->py) {
             continue;
         }
@@ -722,9 +757,13 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     SortEdges(er, nr);
     m_RowMin = ys;
     m_RowMax = ye - 1;
-    int32_t bx0 = M20_W, bx1 = -1;
+    // (each row's x is between its edge's ends, so within the vertices'
+    // extremes: the window clips only if those are out of it; and they're
+    // the box)
+    bool clipx = pxmin < m_ClipL || pxmax > m_ClipR + 1;
+    uint32_t pix = 0;
     const XEDGE *l = el, *le = el + nl, *r = er, *re = er + nr;
-    for (int32_t y = ys; y < ye; y++) {
+    for (int32_t y = ys; y < ye;) {
         while (y >= l->y1 && ++l < le) {
         }
         while (y >= r->y1 && ++r < re) {
@@ -733,37 +772,48 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
             break;
         }
         if (y < l->y0 || y < r->y0) {
-            continue;   // (a gap: not a convex face)
-        }
-        int32_t xl = l->x + l->dx * (y - l->y0);
-        int32_t xr = r->x + r->dx * (y - r->y0);
-        if (xl > xr) {
-            int32_t t = xl;
-            xl = xr;
-            xr = t;
-        }
-        int32_t x0 = xl >> 16, xe = xr >> 16;   // (xe exclusive)
-        x0 = x0 < m_ClipL ? m_ClipL : x0;
-        xe = xe > m_ClipR + 1 ? m_ClipR + 1 : xe;
-        if (x0 >= xe) {
+            y++;   // (a gap: not a convex face)
             continue;
         }
-        bx0 = x0 < bx0 ? x0 : bx0;
-        bx1 = xe - 1 > bx1 ? xe - 1 : bx1;
-        HWR_SpanStats.pixels += xe - x0;
+        // the rows until either edge ends: both stepped
+        int32_t yend = l->y1 < r->y1 ? l->y1 : r->y1;
+        yend = yend > ye ? ye : yend;
+        int32_t xl = l->x + l->dx * (y - l->y0), dl = l->dx;
+        int32_t xr = r->x + r->dx * (y - r->y0), dr = r->dx;
+        for (; y < yend; y++, xl += dl, xr += dr) {
+            int32_t x0 = xl >> 16, xe = xr >> 16;   // (xe exclusive)
+            if (xl > xr) {
+                x0 = xr >> 16;
+                xe = xl >> 16;
+            }
+            if (clipx) {
+                x0 = x0 < m_ClipL ? m_ClipL : x0;
+                xe = xe > m_ClipR + 1 ? m_ClipR + 1 : xe;
+            }
+            if (x0 >= xe) {
+                continue;
+            }
+            pix += (uint32_t)(xe - x0);
 #ifdef M20_BOARD
-        uint32_t tf = HWR_CLK();
-        SPAN_HW[0] = (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0;
-        HWR_TADD(fifo_clk, tf);
-        HWR_Times.rows++;
+            uint32_t tf = HWR_CLK();
+            SPAN_HW[0] = (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0;
+            HWR_TADD(fifo_clk, tf);
+            HWR_Times.rows++;
 #else
-        SPAN_W(0, (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0);
-        m_PixFb = M20_Frame + y * M20_W + x0;
+            SPAN_W(0, (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0);
+            m_PixFb = M20_Frame + y * M20_W + x0;
 #if M20_ZBUF
-        m_PixZb = m_Stream ? m_ZBuf + y * M20_W + x0 : NULL;
+            m_PixZb = m_Stream ? m_ZBuf + y * M20_W + x0 : NULL;
 #endif
-        sc_span_lit(&m_Eng, x0, y, xe - x0);
+            sc_span_lit(&m_Eng, x0, y, xe - x0);
 #endif
+        }
+    }
+    HWR_SpanStats.pixels += pix;
+    int32_t bx0 = pxmin < m_ClipL ? m_ClipL : pxmin;
+    int32_t bx1 = pxmax > m_ClipR ? m_ClipR : pxmax;
+    if (!pix) {
+        bx1 = bx0 - 1;
     }
     HWR_TADD(sec[3], ts);
     HWR_SpanStats.faces++;

@@ -66,7 +66,7 @@ typedef struct HWR_TIMES {
     // (profile builds, CPU cycles: InsertFace; of it StreamFace, and of
     // that the lightmap, the register writes, the span rows' writes (and
     // their count); SpanBegin's flushes)
-    uint32_t insert_clk, stream_clk, lm_clk, regs_clk, fifo_clk, rows, flush_us;
+    uint32_t insert_clk, stream_clk, lm_clk, regs_clk, fifo_clk, rows, flush_us, rowflush_clk;
     uint32_t sec[4];   // (SpanFaceV: vertices and planes, fixed point, light fit, rows)
     uint32_t draw_us;
 } HWR_TIMES;
