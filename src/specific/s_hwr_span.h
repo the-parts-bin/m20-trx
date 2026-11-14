@@ -117,6 +117,7 @@ static void CacheClean(const void *p, uint32_t n)
 // SDRAM: frame 0, depth 0x80000, pages 0x100000 + 64 KB each, the lightmap
 // ring 0x500000.
 #include <stdio.h>
+#include <stdlib.h>
 FILE *HWR_SpanTrace;
 static int32_t m_TracePages;
 #define TR_FB 0x000000u
@@ -141,8 +142,10 @@ static void SpanTraceMem(uint32_t off, const void *p, uint32_t n)
 #define SPAN_W(r, v)                                                           \
     SpanTraceRec((r) < 16 ? 0u : 1u, (r) < 16 ? (r) : (r)-16, (uint32_t)(v))
 // A new trace starts with the pages
+static bool m_TraceRows;   // M20_TRACE_ROWS: rows in the trace, not EDGE
 void HWR_SpanTraceStart(void)
 {
+    m_TraceRows = getenv("M20_TRACE_ROWS") != NULL;
     for (int32_t p = 0; p < m_TracePages; p++) {
         SpanTraceMem(TR_TEX + (uint32_t)p * 65536u, TexturePagePtrs[p], 65536);
     }
@@ -318,9 +321,17 @@ static void SpanLoadPalette(bool water)
     for (int32_t k = 0; k < 256; k++) {
         SPAN_W(25, m_PalCur[k]);
     }
+#ifdef M20_EDGES   // (both: the water one in bank 1, LIT_B's bit 28)
+    for (int32_t k = 0; k < 256; k++) {
+        SPAN_W(25, m_Pal888W[k]);
+    }
+#endif
     m_EngPal = water;
     HWR_SpanStats.palettes++;
 }
+
+// The window the engine's EDGE clamps to (-1: not sent yet)
+static int32_t m_EngClipL = -1, m_EngClipR = -1;
 
 // The brightness (the shade tables' factor) of a light value, as the
 // engine's lightmap sample: 256 - 128 f
@@ -364,6 +375,7 @@ static void SpanBegin(void)
     if (m_EngPal < 0) {
         SpanLoadPalette(false);
     }
+    m_EngClipL = m_EngClipR = -1;
 #ifdef M20_BOARD
     SPAN_W(16, SDRAM_OFF(M20_Frame));
     SPAN_W(17, M20_W);
@@ -688,14 +700,23 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
              tile_off = TR_TEX + (uint32_t)tex * 65536u;
     SpanTraceMem(lm_off, lm, bytes);
 #endif
+#ifdef M20_EDGES
+    m_PalCur = m_SpanWater ? m_Pal888W : m_Pal888;   // (the engine: LIT_B picks the bank)
+#else
     if ((int32_t)m_SpanWater != m_EngPal) {   // the other palette: the engine idle first
         HwWait();
         SpanLoadPalette(m_SpanWater);
     }
+#endif
     uint32_t treg = HWR_CLK();
     HWR_TADD(lm_clk, tlm);
+#ifdef M20_EDGES
+    SPAN_W(0, LIT_B | (uint32_t)m_SpanWater << 28 | 1u << 27 | (uint32_t)lh << 22
+        | (uint32_t)lw << 17 | lm_off >> 6);
+#else
     SPAN_W(0, LIT_B | 1u << 27 | (uint32_t)lh << 22 | (uint32_t)lw << 17
         | lm_off >> 6);
+#endif
     SPAN_W(0, LIT_A | (uint32_t)m_Eng.tiled << 29 | (uint32_t)m_Eng.lshift << 26
         | (uint32_t)m_Eng.th_log2 << 22 | (uint32_t)m_Eng.tw_log2 << 18
         | (uint32_t)m_Eng.toff << 9 | (uint32_t)m_Eng.soff);
@@ -763,6 +784,16 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     bool clipx = pxmin < m_ClipL || pxmax > m_ClipR + 1;
     uint32_t pix = 0;
     const XEDGE *l = el, *le = el + nl, *r = er, *re = er + nr;
+#ifdef M20_EDGES
+    // EDGE (span_engine.v): the engine makes the rows of each pair of
+    // edges; an edge it already has goes on from where it got to
+    const XEDGE *sl = NULL, *sr = NULL;
+#ifdef M20_BOARD
+    const bool edge_cmd = true;
+#else
+    const bool edge_cmd = !m_TraceRows;
+#endif
+#endif
     for (int32_t y = ys; y < ye;) {
         while (y >= l->y1 && ++l < le) {
         }
@@ -773,6 +804,9 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
         }
         if (y < l->y0 || y < r->y0) {
             y++;   // (a gap: not a convex face)
+#ifdef M20_EDGES
+            sl = sr = NULL;
+#endif
             continue;
         }
         // the rows until either edge ends: both stepped
@@ -780,36 +814,65 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
         yend = yend > ye ? ye : yend;
         int32_t xl = l->x + l->dx * (y - l->y0), dl = l->dx;
         int32_t xr = r->x + r->dx * (y - r->y0), dr = r->dx;
+#ifdef M20_EDGES
+        if (edge_cmd) {
+            uint32_t fc = m_ClipL != m_EngClipL || m_ClipR != m_EngClipR;
+            uint32_t fl = l != sl, fr = r != sr;
+            SPAN_W(0, 3u << 30 | fl << 29 | fr << 28 | fc << 27 | (uint32_t)y << 9
+                   | (uint32_t)yend);
+            if (fc) {
+                SPAN_W(0, (uint32_t)m_ClipR << 16 | (uint32_t)m_ClipL);
+                m_EngClipL = m_ClipL;
+                m_EngClipR = m_ClipR;
+            }
+            if (fl) {
+                SPAN_W(0, (uint32_t)xl);
+                SPAN_W(0, (uint32_t)dl);
+            }
+            if (fr) {
+                SPAN_W(0, (uint32_t)xr);
+                SPAN_W(0, (uint32_t)dr);
+            }
+            sl = l;
+            sr = r;
+#ifdef M20_BOARD
+            HWR_Times.rows++;   // (EDGE commands)
+            pix = 1;            // (the rows aren't seen here: the box is the vertices')
+            y = yend;
+            continue;
+#endif
+        }
+#endif
         for (; y < yend; y++, xl += dl, xr += dr) {
-            int32_t x0 = xl >> 16, xe = xr >> 16;   // (xe exclusive)
-            if (xl > xr) {
-                x0 = xr >> 16;
-                xe = xl >> 16;
-            }
-            if (clipx) {
-                x0 = x0 < m_ClipL ? m_ClipL : x0;
-                xe = xe > m_ClipR + 1 ? m_ClipR + 1 : xe;
-            }
-            if (x0 >= xe) {
+            int32_t x0, n = sc_edge_row(xl, xr, clipx ? m_ClipL : -32768,
+                                        clipx ? m_ClipR : 32766, &x0);
+            if (!n) {
                 continue;
             }
-            pix += (uint32_t)(xe - x0);
+            pix += (uint32_t)n;
 #ifdef M20_BOARD
             uint32_t tf = HWR_CLK();
-            SPAN_HW[0] = (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0;
+            SPAN_HW[0] = (uint32_t)n << 19 | (uint32_t)y << 10 | (uint32_t)x0;
             HWR_TADD(fifo_clk, tf);
             HWR_Times.rows++;
 #else
-            SPAN_W(0, (uint32_t)(xe - x0) << 19 | (uint32_t)y << 10 | (uint32_t)x0);
+#ifdef M20_EDGES
+            if (!edge_cmd)
+#endif
+            {
+                SPAN_W(0, (uint32_t)n << 19 | (uint32_t)y << 10 | (uint32_t)x0);
+            }
             m_PixFb = M20_Frame + y * M20_W + x0;
 #if M20_ZBUF
             m_PixZb = m_Stream ? m_ZBuf + y * M20_W + x0 : NULL;
 #endif
-            sc_span_lit(&m_Eng, x0, y, xe - x0);
+            sc_span_lit(&m_Eng, x0, y, n);
 #endif
         }
     }
+#if !(defined(M20_BOARD) && defined(M20_EDGES))   // (EDGE: the engine's own count)
     HWR_SpanStats.pixels += pix;
+#endif
     int32_t bx0 = pxmin < m_ClipL ? m_ClipL : pxmin;
     int32_t bx1 = pxmax > m_ClipR ? m_ClipR : pxmax;
     if (!pix) {

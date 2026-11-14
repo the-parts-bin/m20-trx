@@ -11,10 +11,16 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 void S_Shell_SeedRandom()
 {
     uint32_t t = M20_TimeUs();
+#ifndef M20_BOARD
+    if (getenv("M20_SEED")) {   // (the harness: the same game on every run)
+        t = (uint32_t)strtoul(getenv("M20_SEED"), NULL, 0);
+    }
+#endif
     Random_SeedControl(t & 0xFFFF);
     Random_SeedDraw((t >> 16) ^ 0x1234);
 }
