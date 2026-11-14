@@ -1,3 +1,45 @@
+# Tomb Raider on the m20
+
+This branch (`m20`) runs Tomb Raider (1996) on the m20, a RISC-V SoC on
+the Tang Nano 20K (`../core` in m20-system). The game is TRX (formerly
+Tomb1Main) at its first standalone, fully decompiled build; everything
+below this section is upstream's README from then.
+
+**What's new here:** a platform layer (`src/m20/`: video, sound, keys,
+files on the SD card) and a software renderer (`src/specific/s_hwr.c`)
+in place of the OpenGL one, with no doubles (the FPU is single
+precision). The opaque textured faces go to core's span engine
+(`src/specific/s_hwr_span.h`): it maps them with perspective, lights them
+per pixel from a small lightmap, tests depth, and walks their edges
+itself; the CPU draws the rest (transparent faces, sprites, shadows, the
+2D) in the same order. The levels' pages are tiled for the engine's
+texel cache, and the faces under water use its second palette.
+
+**Speed** (640 × 360, the timedemos: `make TIMEDEMO=1`): the title 29.8
+fps, City of Vilcabamba 11.3 fps, Lost Valley 20.2 fps; with the CPU only
+(`SPANOFF=1`) Vilcabamba runs at 3.3 fps.
+
+**Building:** `make` (the board: `build-640x360-z-t-e/tomb1.bin`) needs
+riscv64-unknown-elf-gcc, picolibc and core (`CORE`, `../core` by default).
+`make host` builds a test harness for 32-bit x86 Linux (SDL2, i386) with
+the board's frame and heap, which draws the engine's faces with its C
+model (`core/firmware/span_core.h`); its environment variables are listed
+in `src/m20/host_sdl.c` (`M20_SEED` repeats a run, `M20_TRACE` records the
+engine's commands for core's `sim/run_trace.sh`). The Makefile lists the
+other options (`TIMEDEMO`, `PROFILE`, `TIMERS`, the engine's features).
+
+**On the card:** `TOMB1.BIN` and `TOMB1/` with `DATA/` (the game's files,
+see `data/README.md`) and `cfg/` (`bin/cfg` here); m20-system's
+`sdcard/make_sdcard.sh` puts them there.
+
+**Keys:** a USB keyboard on either port, or the terminal's (arrows,
+Enter, Esc, letters), with TRX's controls: arrows to move, right Ctrl or
+F for action, right Alt or J to jump, Space or G to draw weapons, Esc for
+the inventory (the terminal has the letter keys). On the terminal, Ctrl-K
+switches the span engine off and on, Ctrl-Z its depth test.
+
+**License:** GPL 3 (`COPYING.md`), as upstream.
+
 # Tomb1Main
 
 This is a dynamic library for the classic Tomb Raider I game (TombATI version).

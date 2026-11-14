@@ -3,8 +3,8 @@
 # keys) over src/m20/m20_platform.h.
 #
 # make (make board): the m20 build, build-WxH/tomb1.bin, which the core
-# firmware's loader copies into SDRAM and runs; needs the m20 core (CORE,
-# ../m20-system/core by default), riscv64-unknown-elf-gcc and
+# firmware's loader copies into SDRAM and runs; needs the m20 core (CORE:
+# ../core in m20-system, else ../m20-system/core), riscv64-unknown-elf-gcc and
 # picolibc-riscv64-unknown-elf. The game's files go in TOMB1/ on the card
 # (DATA/ and cfg/, as for the harness).
 #
@@ -22,7 +22,7 @@ RES_H := $(word 2,$(subst x, ,$(RES)))
 # 128 KB stack. The harness's heap (M20_HEAP) is the same: the board
 # build's (from __heap_start in its ELF, when it has been built; else
 # 4.75 MB). The game's buffer (M20_GAMEBUF, the levels' data) comes from it.
-BOARD_ELF   := build-$(RES)/tomb1.elf
+BOARD_ELF    = $(B)/tomb1.elf
 M20_HEAP    ?= $(if $(wildcard $(BOARD_ELF)),$(shell printf '0x%x' $$(( 0xFE0000 - 0x$$(riscv64-unknown-elf-nm $(BOARD_ELF) | awk '$$3 == "__heap_start" { print $$1 }') ))),0x4C0000)
 M20_GAMEBUF ?= 0x420000
 
@@ -174,7 +174,14 @@ SRC := src/3dsystem/3d_gen.c \
 # -------------------------------------------------------------------------
 # The board
 # -------------------------------------------------------------------------
-CORE    ?= ../m20-system/core
+CORE    ?= $(firstword $(wildcard ../core ../m20-system/core) ../core)
+# The engine's features, all in core's current bitstream (each off with
+# NAME=): ZENGINE its depth test (the opaque faces streamed, unsorted);
+# TILED the pages in 8 x 8 tiles (its texel cache); EDGES its edge walk and
+# palette banks (the faces' rows and those under water)
+ZENGINE ?= 1
+TILED   ?= 1
+EDGES   ?= 1
 CORE_FW := $(CORE)/firmware
 CORE_RT := $(CORE)/runtime
 CROSS   ?= riscv64-unknown-elf-
@@ -188,7 +195,9 @@ CFLAGS_BOARD := $(ARCH) -O2 -g --picolibc-buildtype=release -specs=picolibc.spec
                 -Wno-pointer-sign -Wno-unused-result -Wno-format -Wno-stringop-truncation -Wno-maybe-uninitialized \
                 -fsingle-precision-constant -Wdouble-promotion -DPICOLIBC_INTEGER_PRINTF_SCANF \
                 $(if $(PROFILE),-DM9B_PROFILE -DPROF_TOP=0) $(if $(TIMEDEMO),-DM20_TIMEDEMO) $(if $(ZENGINE),-DM20_ZENGINE) $(if $(SPANOFF),-DM20_SPANOFF) $(if $(TILED),-DM20_TILED) $(if $(TIMERS),-DM20_TIMERS) $(if $(EDGES),-DM20_EDGES)
-# make TIMEDEMO=1: one game step per frame, the demos timed (build-WxH-td/)
+# make TIMEDEMO=1: one game step per frame, the demos timed (build-WxH-td-.../)
+# make TIMERS=1: cycle timers of the frame's stages, on the fps line
+# make SPANOFF=1: the CPU draws everything (-cpu)
 # make PROFILE=1: the PC-sampling profiler (build-WxH-prof/; Ctrl-P on the
 # UART prints it, core's tools/m9bctl.py prof and tools/prof.py read it)
 LDFLAGS_BOARD := $(ARCH) -specs=picolibc.specs --picolibc-buildtype=release -DPICOLIBC_INTEGER_PRINTF_SCANF \

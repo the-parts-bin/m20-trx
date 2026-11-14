@@ -24,3 +24,6 @@ Release/
 *.vcxproj
 *.filters
 build-*/
+
+# The game's data (data/README.md)
+/data/DATA/
