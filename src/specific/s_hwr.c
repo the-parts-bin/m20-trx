@@ -77,6 +77,19 @@ typedef struct PRIM {
 #define PF_SUBPIX 1
 #define PF_OPAQUE 2
 
+// A texel's offset in a 256 x 256 texture page: with make TILED=1 the
+// pages are in 8 x 8 tiles of 64 bytes, a row of 32 tiles after another
+// (the span engine's tiled layout, LIT_A bit 29: a bitstream with it), so
+// that a texel cache line holds a square of texels (s_hwr_span.h,
+// HWR_SpanLevel). x's and y's parts are separate: TEX_OFF(x, 0) +
+// TEX_OFF(0, y).
+#ifdef M20_TILED
+#define TEX_OFF(x, y)                                                          \
+    ((((y) >> 3) << 11) | (((x) >> 3) << 6) | (((y)&7) << 3) | ((x)&7))
+#else
+#define TEX_OFF(x, y) (((y) << 8) | (x))
+#endif
+
 static PRIM m_Prims[M20_MAX_PRIMS];
 static uint16_t m_Keys[M20_MAX_PRIMS];
 static uint16_t m_Order[2][M20_MAX_PRIMS];
@@ -186,6 +199,7 @@ void HWR_SetWaterColor(const RGBF *color)
 {
     m_WaterColor = *color;
     BuildShadeTables();
+    SpanPalette();
 }
 
 void HWR_DownloadTextures(int32_t pages)
@@ -328,11 +342,14 @@ static PRIM *AddPrim(PRIM_TYPE type, int32_t n, int32_t key, HVERT **verts)
 }
 
 // A face's vertex while it's set up: screen position (float, unclamped),
-// 1/z, u/z, v/z and light, all of which interpolate linearly on the screen
+// 1/z, u/z, v/z and light, all of which interpolate linearly on the screen;
+// and the texel itself (s, t: u, v / 256), for the span engine (set by
+// SetVert and ZedClip, not by ClipSide)
 typedef struct CVERT {
     float x, y;
     float iz, uz, vz;
     float g;
+    float s, t;
 } CVERT;
 
 #define MAX_CVERTS 16
@@ -348,10 +365,14 @@ static void SetVert(CVERT *c, const PHD_VBUF *v, const PHD_UV *uv)
     c->y = v->fy;
     c->g = v->g;
     if (uv) {
-        c->uz = ((uv->u1 & 0xFF00) + 0x80) * c->iz;
-        c->vz = ((uv->v1 & 0xFF00) + 0x80) * c->iz;
+        float u = (float)((uv->u1 & 0xFF00) + 0x80);
+        float w = (float)((uv->v1 & 0xFF00) + 0x80);
+        c->uz = u * c->iz;
+        c->vz = w * c->iz;
+        c->s = u * (1.0f / 256.0f);
+        c->t = w * (1.0f / 256.0f);
     } else {
-        c->uz = c->vz = 0.0f;
+        c->uz = c->vz = c->s = c->t = 0.0f;
     }
 }
 
@@ -379,10 +400,13 @@ static int32_t ZedClip(
             if (uv) {
                 float uu0 = (u0->u1 & 0xFF00) + 0x80, uu1 = (u1->u1 & 0xFF00) + 0x80;
                 float vv0 = (u0->v1 & 0xFF00) + 0x80, vv1 = (u1->v1 & 0xFF00) + 0x80;
-                c->uz = (uu0 + (uu1 - uu0) * t) * c->iz;
-                c->vz = (vv0 + (vv1 - vv0) * t) * c->iz;
+                float u = uu0 + (uu1 - uu0) * t, w = vv0 + (vv1 - vv0) * t;
+                c->uz = u * c->iz;
+                c->vz = w * c->iz;
+                c->s = u * (1.0f / 256.0f);
+                c->t = w * (1.0f / 256.0f);
             } else {
-                c->uz = c->vz = 0.0f;
+                c->uz = c->vz = c->s = c->t = 0.0f;
             }
         }
         if (in0) {
@@ -481,12 +505,12 @@ static int32_t FaceKey(PHD_VBUF *const *vb, int32_t n)
                 key = vb[i]->zv;
             }
         }
-    } else {
-        int64_t sum = 0;
+    } else {   // (the average of the shifted depths: 32 bits, no 64-bit divide)
+        int32_t sum = 0;
         for (int32_t i = 0; i < n; i++) {
-            sum += vb[i]->zv;
+            sum += vb[i]->zv >> W2V_SHIFT;
         }
-        key = sum / n;
+        return n == 4 ? sum >> 2 : sum / n;
     }
     return key >> W2V_SHIFT;
 }
@@ -494,6 +518,8 @@ static int32_t FaceKey(PHD_VBUF *const *vb, int32_t n)
 static bool m_Opaque;   // the face being inserted has an opaque texture
 static void SpanBegin(void);          // s_hwr_span.h
 static bool SpanFace(const struct PRIM *p);
+static bool StreamFace(CVERT *c, int32_t n, uint16_t tex);
+static bool m_SpanWater;   // (s_hwr_span.h)
 
 // The face's vertices, clipped, into the list (x and y in 1/16 pixel)
 static void EmitFace(PRIM_TYPE type, CVERT *c, int32_t n, int32_t key, uint16_t tex)
@@ -517,22 +543,20 @@ static void EmitFace(PRIM_TYPE type, CVERT *c, int32_t n, int32_t key, uint16_t 
         dst[i].vz = c[i].vz;
         dst[i].g = (int16_t)c[i].g;
     }
-    // the engine tests the depth: an opaque face straight to it
-    if (HWR_SpanOn && HWR_ZEngine && type == PRIM_GT && m_Opaque
-        && !p->water && HWR_ZMode != 2) {
-        if (!m_Stream) {
-            m_Stream = true;
-            SpanBegin();
-        }
-        if (SpanFace(p)) {
-            m_NumPrims--;
-            m_NumVerts -= n;
-        }
-        return;
-    }
 }
 
+static void InsertFace2(
+    PRIM_TYPE type, int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv,
+    uint16_t tex);
 static void InsertFace(
+    PRIM_TYPE type, int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv,
+    uint16_t tex)
+{
+    uint32_t t0 = HWR_CLK();
+    InsertFace2(type, n, vb, uv, tex);
+    HWR_TADD(insert_clk, t0);
+}
+static void InsertFace2(
     PRIM_TYPE type, int32_t n, PHD_VBUF *const *vb, PHD_UV *const *uv,
     uint16_t tex)
 {
@@ -559,17 +583,30 @@ static void InsertFace(
             return;
         }
     } else {
-        for (int32_t i = 0; i < n; i++) {
-            SetVert(&c[i], vb[i], uv ? uv[i] : NULL);
-        }
         // facing the camera (TombATI's test, in float: the coordinates can
-        // be far beyond 16 bits)
-        float area = (c[0].y - c[1].y) * (c[2].x - c[1].x)
-            - (c[2].y - c[1].y) * (c[0].x - c[1].x);
+        // be far beyond 16 bits), before anything is copied
+        float area = (vb[0]->fy - vb[1]->fy) * (vb[2]->fx - vb[1]->fx)
+            - (vb[2]->fy - vb[1]->fy) * (vb[0]->fx - vb[1]->fx);
         if (area < 0.0f) {
             return;
         }
+        for (int32_t i = 0; i < n; i++) {
+            SetVert(&c[i], vb[i], uv ? uv[i] : NULL);
+        }
         count = n;
+    }
+    // the engine tests the depth: an opaque face straight to it (no sort
+    // key, no list)
+    if (type == PRIM_GT && m_Opaque && HWR_SpanOn && HWR_ZEngine
+        && HWR_ZMode != 2) {
+        if (!m_Stream) {
+            m_Stream = true;
+            SpanBegin();
+        }
+        m_SpanWater = IsShadeEffect;   // (under water: the tinted palette)
+        if (StreamFace(c, count, tex)) {
+            return;
+        }
     }
     EmitFace(type, c, count, FaceKey(vb, n), tex);
 }
@@ -958,7 +995,7 @@ static void DrawGT(const PRIM *p)
                 for (int32_t i = 0; i < run; i++) {
                     int32_t zq = ZClamp(zd);
                     if (zq >= *zb) {
-                        uint8_t c = tex[(vv & 0xFF00) | ((u >> 8) & 0xFF)];
+                        uint8_t c = tex[TEX_OFF((u >> 8) & 0xFF, (vv >> 8) & 0xFF)];
                         if (c) {
                             *dst = shade[(g >> 24) & 31][c];
                             *zb = zq;
@@ -987,7 +1024,7 @@ static void DrawGT(const PRIM *p)
             int32_t u2 = (int32_t)(uz * z), v2 = (int32_t)(vz * z);
             int32_t du = (u2 - u) / run, dv = (v2 - vv) / run;
             for (int32_t i = 0; i < run; i++) {
-                uint8_t c = tex[(vv & 0xFF00) | ((u >> 8) & 0xFF)];
+                uint8_t c = tex[TEX_OFF((u >> 8) & 0xFF, (vv >> 8) & 0xFF)];
                 if (c) {
                     *dst = shade[(g >> 24) & 31][c];
                 }
@@ -1108,11 +1145,11 @@ static void DrawSprite(const PRIM *p)
         for (int32_t y = y0; y < y1; y++, vv += dv) {
             uint16_t *dst = M20_Frame + y * M20_W;
             uint16_t *zb = m_ZBuf + y * M20_W;
-            const uint8_t *row = tex + ((vv >> 8) & 0xFF00);
+            const uint8_t *row = tex + TEX_OFF(0, (vv >> 16) & 0xFF);
             int32_t u = u0;
             for (int32_t x = x0; x < x1; x++, u += du) {
                 if (zq >= zb[x]) {
-                    uint8_t c = row[(u >> 16) & 0xFF];
+                    uint8_t c = row[TEX_OFF((u >> 16) & 0xFF, 0)];
                     if (c) {
                         dst[x] = shade[c];
                         zb[x] = zq;
@@ -1125,10 +1162,10 @@ static void DrawSprite(const PRIM *p)
 #endif
     for (int32_t y = y0; y < y1; y++, vv += dv) {
         uint16_t *dst = M20_Frame + y * M20_W;
-        const uint8_t *row = tex + ((vv >> 8) & 0xFF00);
+        const uint8_t *row = tex + TEX_OFF(0, (vv >> 16) & 0xFF);
         int32_t u = u0;
         for (int32_t x = x0; x < x1; x++, u += du) {
-            uint8_t c = row[(u >> 16) & 0xFF];
+            uint8_t c = row[TEX_OFF((u >> 16) & 0xFF, 0)];
             if (c) {
                 dst[x] = shade[c];
             }
@@ -1299,8 +1336,9 @@ const uint16_t *HWR_DepthBuffer(void)
 static void DrawPass(const uint16_t *order, int32_t n, bool z)
 {
     m_ZOn = z;   // (the depth buffer was cleared by HWR_InitPolyList)
-    // the span engine: the opaque textured faces above water (not with the
-    // depth buffer: that's the CPU's, a reference)
+    // the span engine: the opaque textured faces (under water with its
+    // tinted palette; not with the depth buffer: that's the CPU's, a
+    // reference)
     bool span = HWR_SpanOn && !z;
     if (span) {
         SpanBegin();
@@ -1308,8 +1346,7 @@ static void DrawPass(const uint16_t *order, int32_t n, bool z)
     for (int32_t i = 0; i < n; i++) {
         const PRIM *p = &m_Prims[order[i]];
         if (span) {
-            if (p->type == PRIM_GT && (p->flags & PF_OPAQUE) && !p->water
-                && SpanFace(p)) {
+            if (p->type == PRIM_GT && (p->flags & PF_OPAQUE) && SpanFace(p)) {
                 continue;
             }
             SpanCpuPrim(p);

@@ -262,8 +262,18 @@ void M20_PictureRelease(void)
 {
 }
 
+// M20_TRACE=a,b,c: the span engine's command trace of those frames
+// (s_hwr_span.h), into trace-fNNNNN.bin
+extern FILE *HWR_SpanTrace;
+void HWR_SpanTraceStart(void);
+static char m_Trace[256];
+
 void M20_Present(void)
 {
+    if (HWR_SpanTrace) {
+        fclose(HWR_SpanTrace);
+        HWR_SpanTrace = NULL;
+    }
     if (HWR_ZMode == 2 && HWR_Stats.zdiff) {
         fprintf(stderr, "zdiff %d %d\n", m_FrameNo, HWR_Stats.zdiff);
         HWR_Stats.zdiff = 0;
@@ -284,6 +294,12 @@ void M20_Present(void)
         SDL_RenderPresent(m_Renderer);
     }
     m_FrameNo++;
+    if (m_Trace[0] && listed(m_Trace, m_FrameNo)) {
+        char name[64];
+        snprintf(name, sizeof(name), "trace-f%05d.bin", m_FrameNo);
+        HWR_SpanTrace = fopen(name, "wb");
+        HWR_SpanTraceStart();
+    }
     if (M20_Scripted) {
         script_keys();
     }
@@ -410,6 +426,9 @@ int main(int argc, char **argv)
     }
     if (getenv("M20_LEVEL")) {
         M20_StartLevel = atoi(getenv("M20_LEVEL"));
+    }
+    if (getenv("M20_TRACE")) {
+        snprintf(m_Trace, sizeof(m_Trace), "%s", getenv("M20_TRACE"));
     }
     if (getenv("M20_SPAN")) {
         HWR_SpanOn = atoi(getenv("M20_SPAN")) != 0;

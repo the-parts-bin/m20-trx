@@ -63,9 +63,23 @@ extern HWR_STATS HWR_Stats;
 typedef struct HWR_TIMES {
     uint32_t list_start;
     uint32_t build_us;
+    // (profile builds, CPU cycles: InsertFace; of it StreamFace, and of
+    // that the lightmap, the register writes, the span rows' writes (and
+    // their count); SpanBegin's flushes)
+    uint32_t insert_clk, stream_clk, lm_clk, regs_clk, fifo_clk, rows, flush_us;
+    uint32_t sec[4];   // (SpanFaceV: vertices and planes, fixed point, light fit, rows)
     uint32_t draw_us;
 } HWR_TIMES;
 extern HWR_TIMES HWR_Times;
+// The finer times (CPU cycles, CLOCK_CNT) only with make TIMERS=1 (the
+// timer reads cost time themselves, and skew PROFILE=1's samples)
+#if defined(M20_BOARD) && defined(M20_TIMERS)
+#define HWR_CLK() (*(volatile uint32_t *)0x44000Cu)
+#define HWR_TADD(field, t0) (HWR_Times.field += HWR_CLK() - (t0))
+#else
+#define HWR_CLK() 0u
+#define HWR_TADD(field, t0) ((void)(t0))
+#endif
 
 // The span engine (s_hwr_span.h): on for the opaque textured faces
 typedef struct HWR_SPAN_STATS {
@@ -73,6 +87,7 @@ typedef struct HWR_SPAN_STATS {
     uint32_t pixels;        // their pixels
     uint32_t waits;         // times the CPU waited for it
     uint32_t wait_clk;      // the clocks it waited (the board)
+    uint32_t palettes;      // palettes loaded (the level's / under water)
 } HWR_SPAN_STATS;
 extern bool HWR_SpanOn;
 extern bool HWR_ZEngine;   // the engine tests the depth (the opaque faces unsorted)

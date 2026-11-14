@@ -249,8 +249,9 @@ void M20_Present(void)
         if (m_FpsFrames && HWR_SpanOn) {
             HWR_SPAN_STATS *st = &HWR_SpanStats;
             uint32_t f = m_FpsFrames;
-            printf("  engine: %u faces, %u pixels, waited %u times, %u.%u ms per frame\n",
+            printf("  engine: %u faces, %u pixels, %u.%u palettes, waited %u times, %u.%u ms per frame\n",
                    (unsigned)(st->faces / f), (unsigned)(st->pixels / f),
+                   (unsigned)(st->palettes / f), (unsigned)(st->palettes * 10 / f % 10),
                    (unsigned)(st->waits / f),
                    (unsigned)(st->wait_clk / f / CLOCK_PER_MS),
                    (unsigned)(st->wait_clk / f % CLOCK_PER_MS * 10 / CLOCK_PER_MS));
@@ -275,6 +276,23 @@ void M20_Present(void)
                    (unsigned)(HWR_Times.draw_us / f),
                    (unsigned)((el - HWR_Times.build_us - HWR_Times.draw_us) / f));
             HWR_Times.build_us = HWR_Times.draw_us = 0;
+#ifdef M20_TIMERS
+            {   // (CPU cycles to us)
+                uint32_t k = f * (CLOCK_PER_MS / 1000u);
+                printf("  insert %u us (to the engine %u us: lightmap %u, registers %u, "
+                       "%u rows %u us); flushes %u us per frame\n",
+                       (unsigned)(HWR_Times.insert_clk / k), (unsigned)(HWR_Times.stream_clk / k),
+                       (unsigned)(HWR_Times.lm_clk / k), (unsigned)(HWR_Times.regs_clk / k),
+                       (unsigned)(HWR_Times.rows / f), (unsigned)(HWR_Times.fifo_clk / k),
+                       (unsigned)(HWR_Times.flush_us / k));
+                printf("  SpanFaceV: planes %u us, fixed point %u us, light fit %u us, rows %u us\n",
+                       (unsigned)(HWR_Times.sec[0] / k), (unsigned)(HWR_Times.sec[1] / k),
+                       (unsigned)(HWR_Times.sec[2] / k), (unsigned)(HWR_Times.sec[3] / k));
+                memset(HWR_Times.sec, 0, sizeof(HWR_Times.sec));
+            }
+#endif
+            HWR_Times.insert_clk = HWR_Times.stream_clk = HWR_Times.fifo_clk = 0;
+            HWR_Times.lm_clk = HWR_Times.regs_clk = HWR_Times.rows = HWR_Times.flush_us = 0;
         }
         memset(&HWR_SpanStats, 0, sizeof(HWR_SpanStats));
         m_FpsStart = now;

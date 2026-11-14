@@ -411,54 +411,59 @@ const int16_t *calc_object_vertices(const int16_t *obj_ptr)
 
     obj_ptr++;
     int vertex_count = *obj_ptr++;
+    // m20: the loop's invariants in locals (the matrix would be reloaded
+    // after every store to PhdVBuf, and the getters are calls)
+    const PHD_MATRIX *mp = PhdMatrixPtr;
+    const int32_t m00 = mp->_00, m01 = mp->_01, m02 = mp->_02, m03 = mp->_03;
+    const int32_t m10 = mp->_10, m11 = mp->_11, m12 = mp->_12, m13 = mp->_13;
+    const int32_t m20 = mp->_20, m21 = mp->_21, m22 = mp->_22, m23 = mp->_23;
+    const int32_t near_z = phd_GetNearZ();
+    const float cx = (float)ViewPort_GetCenterX(), cy = (float)ViewPort_GetCenterY();
+    const float persp = (float)PhdPersp;
+    const int32_t left = PhdLeft, right = PhdRight, top = PhdTop, bottom = PhdBottom;
     for (int i = 0; i < vertex_count; i++) {
-        int32_t xv = PhdMatrixPtr->_00 * obj_ptr[0]
-            + PhdMatrixPtr->_01 * obj_ptr[1] + PhdMatrixPtr->_02 * obj_ptr[2]
-            + PhdMatrixPtr->_03;
-        int32_t yv = PhdMatrixPtr->_10 * obj_ptr[0]
-            + PhdMatrixPtr->_11 * obj_ptr[1] + PhdMatrixPtr->_12 * obj_ptr[2]
-            + PhdMatrixPtr->_13;
-        int32_t zv = PhdMatrixPtr->_20 * obj_ptr[0]
-            + PhdMatrixPtr->_21 * obj_ptr[1] + PhdMatrixPtr->_22 * obj_ptr[2]
-            + PhdMatrixPtr->_23;
+        int32_t x = obj_ptr[0], y = obj_ptr[1], z = obj_ptr[2];
+        int32_t xv = m00 * x + m01 * y + m02 * z + m03;
+        int32_t yv = m10 * x + m11 * y + m12 * z + m13;
+        int32_t zv = m20 * x + m21 * y + m22 * z + m23;
         PhdVBuf[i].xv = xv;
         PhdVBuf[i].yv = yv;
         PhdVBuf[i].zv = zv;
 
         int32_t clip_flags;
-        if (zv < phd_GetNearZ()) {
+        if (zv < near_z) {
             clip_flags = -32768;
         } else {
             clip_flags = 0;
 
             // m20: in float, one division (the integer xs, ys from it)
-            float iz = 1.0f / (float)zv, k = (float)PhdPersp * iz;
-            float fx = ViewPort_GetCenterX() + xv * k;
-            float fy = ViewPort_GetCenterY() + yv * k;
+            float iz = 1.0f / (float)zv, k = persp * iz;
+            float fx = cx + xv * k;
+            float fy = cy + yv * k;
             PhdVBuf[i].fx = fx;
             PhdVBuf[i].fy = fy;
             PhdVBuf[i].iz = iz;
             int32_t xs = fx < -32768.0f ? -32768 : fx > 32767.0f ? 32767 : (int32_t)fx;
             int32_t ys = fy < -32768.0f ? -32768 : fy > 32767.0f ? 32767 : (int32_t)fy;
 
-            if (xs < PhdLeft) {
+            if (xs < left) {
                 if (xs < -32760) {
                     xs = -32760;
                 }
                 clip_flags |= 1;
-            } else if (xs > PhdRight) {
+            } else if (xs > right) {
                 if (xs > 32760) {
                     xs = 32760;
                 }
                 clip_flags |= 2;
             }
 
-            if (ys < PhdTop) {
+            if (ys < top) {
                 if (ys < -32760) {
                     ys = -32760;
                 }
                 clip_flags |= 4;
-            } else if (ys > PhdBottom) {
+            } else if (ys > bottom) {
                 if (ys > 32760) {
                     ys = 32760;
                 }
@@ -524,31 +529,37 @@ const int16_t *calc_vertice_light(const int16_t *obj_ptr)
 const int16_t *calc_roomvert(const int16_t *obj_ptr)
 {
     int32_t vertex_count = *obj_ptr++;
+    // m20: the loop's invariants in locals (the matrix would be reloaded
+    // after every store to PhdVBuf, and the getters are calls)
+    const PHD_MATRIX *mp = PhdMatrixPtr;
+    const int32_t m00 = mp->_00, m01 = mp->_01, m02 = mp->_02, m03 = mp->_03;
+    const int32_t m10 = mp->_10, m11 = mp->_11, m12 = mp->_12, m13 = mp->_13;
+    const int32_t m20 = mp->_20, m21 = mp->_21, m22 = mp->_22, m23 = mp->_23;
+    const int32_t near_z = phd_GetNearZ();
+    const float cx = (float)ViewPort_GetCenterX(), cy = (float)ViewPort_GetCenterY();
+    const float persp = (float)PhdPersp;
+    const int32_t left = PhdLeft, right = PhdRight, top = PhdTop, bottom = PhdBottom;
+    const int32_t dist_max = phd_GetDrawDistMax(), fog_begin = phd_GetDrawDistFade();
 
     for (int i = 0; i < vertex_count; i++) {
-        int32_t xv = PhdMatrixPtr->_00 * obj_ptr[0]
-            + PhdMatrixPtr->_01 * obj_ptr[1] + PhdMatrixPtr->_02 * obj_ptr[2]
-            + PhdMatrixPtr->_03;
-        int32_t yv = PhdMatrixPtr->_10 * obj_ptr[0]
-            + PhdMatrixPtr->_11 * obj_ptr[1] + PhdMatrixPtr->_12 * obj_ptr[2]
-            + PhdMatrixPtr->_13;
-        int32_t zv = PhdMatrixPtr->_20 * obj_ptr[0]
-            + PhdMatrixPtr->_21 * obj_ptr[1] + PhdMatrixPtr->_22 * obj_ptr[2]
-            + PhdMatrixPtr->_23;
+        int32_t x = obj_ptr[0], y = obj_ptr[1], z = obj_ptr[2];
+        int32_t xv = m00 * x + m01 * y + m02 * z + m03;
+        int32_t yv = m10 * x + m11 * y + m12 * z + m13;
+        int32_t zv = m20 * x + m21 * y + m22 * z + m23;
         PhdVBuf[i].xv = xv;
         PhdVBuf[i].yv = yv;
         PhdVBuf[i].zv = zv;
         PhdVBuf[i].g = obj_ptr[3];
 
-        if (zv < phd_GetNearZ()) {
+        if (zv < near_z) {
             PhdVBuf[i].clip = 0x8000;
         } else {
             int16_t clip_flags = 0;
             int32_t depth = zv >> W2V_SHIFT;
-            if (depth > phd_GetDrawDistMax()) {
+            if (depth > dist_max) {
                 PhdVBuf[i].g = 0x1FFF;
                 clip_flags |= 16;
-            } else if (depth) {
+            } else if (depth >= fog_begin && depth) {   // (0 before fog_begin)
                 PhdVBuf[i].g += phd_CalculateFogShade(depth);
                 if (!IsWaterEffect) {
                     CLAMPG(PhdVBuf[i].g, 0x1FFF);
@@ -556,9 +567,9 @@ const int16_t *calc_roomvert(const int16_t *obj_ptr)
             }
 
             // m20: in float, one division (the integer xs, ys from it)
-            float iz = 1.0f / (float)zv, k = (float)PhdPersp * iz;
-            float fx = ViewPort_GetCenterX() + xv * k;
-            float fy = ViewPort_GetCenterY() + yv * k;
+            float iz = 1.0f / (float)zv, k = persp * iz;
+            float fx = cx + xv * k;
+            float fy = cy + yv * k;
             int32_t xs = fx < -32768.0f ? -32768 : fx > 32767.0f ? 32767 : (int32_t)fx;
             int32_t ys = fy < -32768.0f ? -32768 : fy > 32767.0f ? 32767 : (int32_t)fy;
             if (IsWibbleEffect) {
@@ -573,24 +584,24 @@ const int16_t *calc_roomvert(const int16_t *obj_ptr)
             PhdVBuf[i].fy = fy;
             PhdVBuf[i].iz = iz;
 
-            if (xs < PhdLeft) {
+            if (xs < left) {
                 if (xs < -32760) {
                     xs = -32760;
                 }
                 clip_flags |= 1;
-            } else if (xs > PhdRight) {
+            } else if (xs > right) {
                 if (xs > 32760) {
                     xs = 32760;
                 }
                 clip_flags |= 2;
             }
 
-            if (ys < PhdTop) {
+            if (ys < top) {
                 if (ys < -32760) {
                     ys = -32760;
                 }
                 clip_flags |= 4;
-            } else if (ys > PhdBottom) {
+            } else if (ys > bottom) {
                 if (ys > 32760) {
                     ys = 32760;
                 }
