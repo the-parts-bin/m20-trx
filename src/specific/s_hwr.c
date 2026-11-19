@@ -127,7 +127,7 @@ static int32_t m_ClipL, m_ClipT, m_ClipR, m_ClipB;   // inclusive
 #endif
 int HWR_ZMode;
 #if M20_ZBUF
-static uint16_t m_ZBuf[M20_W * M20_H] __attribute__((aligned(64)));
+static uint16_t m_ZBuf[M20_W * M20_H] __attribute__((aligned(2048)));   // (the span engine: a multiple of 2 KB from the frame)
 #ifndef M20_BOARD
 static uint16_t m_Save[M20_W * M20_H], m_Sorted[M20_W * M20_H];
 #endif

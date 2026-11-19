@@ -117,7 +117,7 @@ uint32_t M20_TimeUs(void)
 // Video
 // ---------------------------------------------------------------------
 #define NBUF 3
-static uint16_t m_Disp[NBUF][M20_W * M20_H] __attribute__((aligned(256)));
+static uint16_t m_Disp[NBUF][M20_W * M20_H] __attribute__((aligned(2048)));   // (the span engine: z a multiple of 2 KB away; each 225 x 2 KB)
 static volatile int m_Shown = -1, m_Pending = -1;
 static int m_Drawing;
 static uint32_t m_RowOff[LINES];   // each line's row, in pixels
