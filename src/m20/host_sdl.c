@@ -1,6 +1,25 @@
 // The test harness's platform (src/m20/m20_platform.h): 32-bit x86 Linux
 // with SDL2, the board's frame size and heap.
 //
+// The span engine: the renderer writes the board's registers
+// (s_hwr_span.h), which go to core's emulator of the engine
+// (core/firmware/span_emu.c, M20_SPANEMU: make host); its counts and
+// warnings (spans of 0 pixels, z buffers it can't address, stale z cache
+// lines) are printed at the exit. The program is linked at 0x800000
+// (-Ttext-segment), so its image, the frame, the depth buffer, the lightmap
+// ring and the heap arena (the level's texture pages) sit in [0x800000,
+// 0x1000000), the window that stands for the 8 MB of SDRAM: the board's
+// SDRAM_OFF(p) = p - 0x800000 holds (M20_SdramOff checks it), and
+// span_emu_init((void *)0x800000). make host SPANEMU=0: the engine's C
+// model instead (span_core.h, above the register level; M20_TRACE).
+//
+// Files: the game's files from M20_DATA (the SD card's root, holding
+// TOMB1/, or TOMB1/ itself: DATA/ and cfg/; default the current directory);
+// everything the game writes (saves, cfg/Tomb1Main_runtime.json5,
+// Tomb1Main.log) and the harness's pictures and traces go to M20_OUT
+// (default the current directory; made if it isn't there), which is also
+// read first (a file the game wrote there wins over the card's).
+//
 // Window: the frame scaled to 1280 x 720, as the board shows it. F12 saves
 // the frame as fNNNNN.ppm. The heap is an arena the size of the board's
 // (M20_HEAP bytes, the Makefile), every malloc of the game's from it, so
@@ -15,17 +34,28 @@
 // M20_ZBUF=0 sorted (the default), 1 the depth buffer, 2 both, compared:
 // each frame's count of differing pixels on stderr ("zdiff"), and with each
 // saved frame the sorted one as fNNNNN-s.ppm (F8 in the window cycles them);
-// M20_SPAN=1 the span engine's C model for the opaque textured faces, as on
-// the board (F7 in the window toggles it).
+// M20_SPAN=0/1 the span engine off/on for the opaque textured faces (on by
+// default with the emulator, off with SPANEMU=0; F7 in the window toggles
+// it); M20_EMUSTATS=n span_emu_stats every n frames too.
 #include "m20/m20_platform.h"
 #include "specific/s_hwr.h"
 
 #include <SDL.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <unistd.h>
+#ifdef M20_SPANEMU
+#include "span_emu.h"
+#endif
 
+// (aligned as the board's display buffers: the depth buffer a multiple of
+// 2 KB from it, as the engine addresses it)
+static uint16_t m_FrameBuf[M20_W * M20_H] __attribute__((aligned(2048)));
 uint16_t *M20_Frame;
 uint16_t *M20_LastFrame;
 uint8_t M20_Keys[256];
@@ -40,6 +70,7 @@ static int m_FrameNo;
 static int m_Steps = -1;
 static char m_Shots[4096];
 static const char *m_KeyScript;
+static int m_EmuStats;       // M20_EMUSTATS: every n frames
 int M20_StartLevel = -1;     // M20_LEVEL: start at this level
 int M20_CamTest;            // M20_CAMTEST=1: the camera at random (game/camera.c)
 uint32_t M20_ScriptKeys;     // read by s_input.c in scripted runs
@@ -175,6 +206,141 @@ void S_Shell_ReportMemory(const char *what)
 }
 
 // ---------------------------------------------------------------------
+// The SDRAM window, the emulator
+// ---------------------------------------------------------------------
+#define WIN_LO 0x800000u
+#define WIN_HI 0x1000000u
+extern char __executable_start[], _end[];
+
+uint32_t M20_SdramOff(const void *p, const char *what)
+{
+    uintptr_t a = (uintptr_t)p;
+    if (a < WIN_LO || a >= WIN_HI) {
+        fprintf(
+            stderr,
+            "SDRAM_OFF(%s): %p is outside the SDRAM window [0x800000, "
+            "0x1000000) (frame %d)\n",
+            what, p, m_FrameNo);
+        abort();
+    }
+    return (uint32_t)a - WIN_LO;
+}
+
+static void emu_stats(const char *when)
+{
+#ifdef M20_SPANEMU
+    const span_emu_stats_t *s = &span_emu_stats;
+    fprintf(
+        stderr,
+        "span_emu %s (frame %d): spans %u pixels %u (in %u) edges %u "
+        "lightmaps %u zero_spans %u z_layout %u z_stale %u\n",
+        when, m_FrameNo, s->spans, s->pixels, s->pixels_in, s->edges,
+        s->lightmaps, s->zero_spans, s->z_layout, s->z_stale);
+#endif
+}
+
+static void host_exit(int code, const char *what)
+{
+    fflush(stdout);
+    S_Shell_ReportMemory(what);
+    emu_stats("at the exit");
+    exit(code);
+}
+
+// ---------------------------------------------------------------------
+// Files: read from M20_OUT (the current directory), then M20_DATA; written
+// to M20_OUT, with the directories they need (the game's fopen calls)
+// ---------------------------------------------------------------------
+static char m_DataDir[PATH_MAX];   // "" when it's M20_OUT
+static char m_OutDir[PATH_MAX];
+FILE *__real_fopen(const char *path, const char *mode);
+
+static void make_dirs(const char *path)   // the directories of path's file
+{
+    char d[PATH_MAX];
+    snprintf(d, sizeof(d), "%s", path);
+    for (char *p = d + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(d, 0777);
+            *p = '/';
+        }
+    }
+}
+
+FILE *__wrap_fopen(const char *path, const char *mode)
+{
+    if (path[0] == '/') {
+        return __real_fopen(path, mode);
+    }
+    if (strpbrk(mode, "wa+")) {
+        make_dirs(path);
+        return __real_fopen(path, mode);
+    }
+    FILE *f = __real_fopen(path, mode);
+    if (!f && m_DataDir[0]) {
+        char full[PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", m_DataDir, path);
+        f = __real_fopen(full, mode);
+    }
+    return f;
+}
+
+static bool is_dir(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void make_dir_path(const char *path)   // mkdir -p
+{
+    char d[PATH_MAX];
+    snprintf(d, sizeof(d), "%s/", path);
+    make_dirs(d);
+}
+
+// M20_DATA (the card's root or TOMB1/) and M20_OUT, absolute, and into
+// M20_OUT
+static void setup_dirs(void)
+{
+    char cwd[PATH_MAX], data[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) {
+        strcpy(cwd, ".");
+    }
+    const char *d = getenv("M20_DATA");
+    if (!d || !*d) {
+        d = cwd;
+    }
+    char tomb1[PATH_MAX];
+    snprintf(tomb1, sizeof(tomb1), "%s/TOMB1", d);
+    if (is_dir(tomb1)) {
+        d = tomb1;
+    }
+    if (!realpath(d, data)) {
+        fprintf(stderr, "host: no data directory %s: %s\n", d, strerror(errno));
+        exit(1);
+    }
+    const char *o = getenv("M20_OUT");
+    if (!o || !*o) {
+        o = cwd;
+    }
+    make_dir_path(o);
+    if (!realpath(o, m_OutDir) || chdir(m_OutDir) != 0) {
+        fprintf(stderr, "host: no output directory %s: %s\n", o, strerror(errno));
+        exit(1);
+    }
+    if (strcmp(data, m_OutDir)) {
+        snprintf(m_DataDir, sizeof(m_DataDir), "%s", data);
+    }
+    char cfg[PATH_MAX];
+    snprintf(cfg, sizeof(cfg), "%s/cfg/Tomb1Main_gameflow.json5", data);
+    if (access(cfg, R_OK) != 0) {
+        fprintf(stderr, "host: warning: no %s (M20_DATA: the card's root or TOMB1/)\n", cfg);
+    }
+    fprintf(stderr, "host: data %s, output %s\n", data, m_OutDir);
+}
+
+// ---------------------------------------------------------------------
 // Video, input, time
 // ---------------------------------------------------------------------
 static void save_one(const uint16_t *frame, const char *suffix)
@@ -252,9 +418,15 @@ static void script_keys(void)
     }
 }
 
+// (outside the SDRAM window, which it wouldn't fit in with the rest: the
+// engine never sees it)
+void *__real_malloc(size_t size);
 uint16_t *M20_PictureBuffer(const uint16_t *keep)
 {
-    static uint16_t picture[M20_W * M20_H];
+    static uint16_t *picture;
+    if (!picture) {
+        picture = __real_malloc(M20_W * M20_H * 2);
+    }
     return picture;
 }
 
@@ -263,17 +435,21 @@ void M20_PictureRelease(void)
 }
 
 // M20_TRACE=a,b,c: the span engine's command trace of those frames
-// (s_hwr_span.h), into trace-fNNNNN.bin
+// (s_hwr_span.h), into trace-fNNNNN.bin (SPANEMU=0 only)
+#ifndef M20_SPANEMU
 extern FILE *HWR_SpanTrace;
 void HWR_SpanTraceStart(void);
+#endif
 static char m_Trace[256];
 
 void M20_Present(void)
 {
+#ifndef M20_SPANEMU
     if (HWR_SpanTrace) {
         fclose(HWR_SpanTrace);
         HWR_SpanTrace = NULL;
     }
+#endif
     if (HWR_ZMode == 2 && HWR_Stats.zdiff) {
         fprintf(stderr, "zdiff %d %d\n", m_FrameNo, HWR_Stats.zdiff);
         HWR_Stats.zdiff = 0;
@@ -283,9 +459,11 @@ void M20_Present(void)
             save_ppm();
         }
         if (m_FrameNo >= m_Steps) {
-            S_Shell_ReportMemory("exit");
-            exit(0);
+            host_exit(0, "exit");
         }
+    }
+    if (m_EmuStats && m_FrameNo % m_EmuStats == 0) {
+        emu_stats("so far");
     }
     if (!m_Headless) {
         SDL_UpdateTexture(m_Texture, NULL, M20_Frame, M20_W * 2);
@@ -294,12 +472,14 @@ void M20_Present(void)
         SDL_RenderPresent(m_Renderer);
     }
     m_FrameNo++;
+#ifndef M20_SPANEMU
     if (m_Trace[0] && listed(m_Trace, m_FrameNo)) {
         char name[64];
         snprintf(name, sizeof(name), "trace-f%05d.bin", m_FrameNo);
         HWR_SpanTrace = fopen(name, "wb");
         HWR_SpanTraceStart();
     }
+#endif
     if (M20_Scripted) {
         script_keys();
     }
@@ -313,8 +493,7 @@ void M20_PollInput(void)
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) {
-            S_Shell_ReportMemory("exit");
-            exit(0);
+            host_exit(0, "exit");
         }
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F12
             && !e.key.repeat) {
@@ -328,7 +507,7 @@ void M20_PollInput(void)
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F7
             && !e.key.repeat) {
             HWR_SpanOn = !HWR_SpanOn;
-            fprintf(stderr, "span engine (model): %s\n", HWR_SpanOn ? "on" : "off");
+            fprintf(stderr, "span engine: %s\n", HWR_SpanOn ? "on" : "off");
         }
         if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F8
             && !e.key.repeat) {
@@ -354,8 +533,7 @@ uint32_t M20_TimeUs(void)
 void M20_Fatal(const char *message)
 {
     fprintf(stderr, "FATAL: %s\n", message);
-    S_Shell_ReportMemory("fatal");
-    exit(1);
+    host_exit(1, "fatal");
 }
 
 // ---------------------------------------------------------------------
@@ -408,9 +586,20 @@ int main(int argc, char **argv)
 {
     M20_Argc = argc;
     M20_Argv = argv;
-    static uint16_t frame[M20_W * M20_H];
-    M20_Frame = frame;
-    M20_LastFrame = frame;
+    if ((uintptr_t)__executable_start < WIN_LO || (uintptr_t)_end > WIN_HI) {
+        fprintf(
+            stderr,
+            "host: the image [%p, %p) isn't inside the SDRAM window "
+            "[0x800000, 0x1000000)\n",
+            (void *)__executable_start, (void *)_end);
+        return 1;
+    }
+#ifdef M20_SPANEMU
+    span_emu_init((void *)(uintptr_t)WIN_LO);
+#endif
+    M20_Frame = m_FrameBuf;
+    M20_LastFrame = m_FrameBuf;
+    setup_dirs();
 
     const char *s = getenv("M20_STEPS");
     if (s) {
@@ -428,7 +617,14 @@ int main(int argc, char **argv)
         M20_StartLevel = atoi(getenv("M20_LEVEL"));
     }
     if (getenv("M20_TRACE")) {
+#ifdef M20_SPANEMU
+        fprintf(stderr, "host: M20_TRACE needs make host SPANEMU=0\n");
+#else
         snprintf(m_Trace, sizeof(m_Trace), "%s", getenv("M20_TRACE"));
+#endif
+    }
+    if (getenv("M20_EMUSTATS")) {
+        m_EmuStats = atoi(getenv("M20_EMUSTATS"));
     }
     if (getenv("M20_SPAN")) {
         HWR_SpanOn = atoi(getenv("M20_SPAN")) != 0;
@@ -457,8 +653,18 @@ int main(int argc, char **argv)
             M20_W, M20_H);
     }
 
+    fprintf(
+        stderr, "host: image %p-%p, heap arena %p-%p (%u KB), span engine %s\n",
+        (void *)__executable_start, (void *)_end, (void *)m_Arena,
+        (void *)(m_Arena + M20_HEAP), (unsigned)(M20_HEAP >> 10),
+#ifdef M20_SPANEMU
+        "emulated (span_emu)"
+#else
+        "C model (span_core)"
+#endif
+    );
     Shell_Main();
-    S_Shell_ReportMemory("exit");
+    host_exit(0, "exit");
     return 0;
 }
 

@@ -29,8 +29,17 @@
 // HWR_SpanLevel moves the level's texels off them, to the nearest colour of
 // 1..223 (0 stays: transparent), for the CPU's drawing too.
 //
-// On the host the engine's C model (core/firmware/span_core.h) draws each
-// span at once (HWR_SpanOn: M20_SPAN=1 in the harness).
+// On the host (make host) the same register writes go to core's emulator
+// of the engine (core/firmware/span_emu.c: M20_SPANEMU), which draws as the
+// RTL does, into the frame and depth buffers where the board has them (the
+// harness is linked at 0x800000: SDRAM_OFF holds). make host SPANEMU=0
+// instead draws each span with the engine's C model (span_core.h) above the
+// register level, and can record the commands as a trace (M20_TRACE).
+// HWR_SpanOn: M20_SPAN in the harness (on by default with the emulator).
+
+#if defined(M20_BOARD) || defined(M20_SPANEMU)
+#define M20_SPANREGS   // the engine's registers: the board's, or the emulator's
+#endif
 
 #ifdef M20_BOARD
 #ifdef M20_SPANOFF   // make SPANOFF=1: the CPU only
@@ -43,6 +52,9 @@ bool HWR_ZEngine = true;
 #else
 bool HWR_ZEngine = false;
 #endif
+#elif defined(M20_SPANEMU)
+bool HWR_SpanOn = true;
+bool HWR_ZEngine = true;
 #else
 bool HWR_SpanOn = false;
 bool HWR_ZEngine = true;
@@ -70,11 +82,22 @@ static int32_t m_EqX0 = 1, m_EqX1 = 0, m_EqY0, m_EqY1;
 // The rows the CPU drew in since the engine last had a face
 static int32_t m_CpuY0 = M20_H, m_CpuY1 = -1;
 
+#ifdef M20_SPANREGS
 #ifdef M20_BOARD
 #define SPAN_HW ((volatile uint32_t *)0x490000u)
-#define SPAN_BUSY (1u << 31)
+#define SPAN_W(r, v) (SPAN_HW[r] = (v))
+#define SPAN_R(r) (SPAN_HW[r])
 #define SDRAM_OFF(p) ((uint32_t)(uintptr_t)(p)-0x800000u)
 #define CLOCK_CNT (*(volatile uint32_t *)0x44000Cu)
+#else   // (the harness: the emulator; SDRAM_OFF checks that p is in the window)
+#include "span_emu.h"
+#define SPAN_W(r, v) span_emu_write((r), (uint32_t)(v))
+#define SPAN_R(r) span_emu_read(r)
+uint32_t M20_SdramOff(const void *p, const char *what);   // host_sdl.c
+#define SDRAM_OFF(p) M20_SdramOff((p), #p)
+#define CLOCK_CNT 0u
+#endif
+#define SPAN_BUSY (1u << 31)
 static bool m_HwQueued;
 static int16_t m_ZDummy[1024] __attribute__((aligned(64)));   // z writes, stride 0
 
@@ -86,29 +109,33 @@ static void HwWait(void)
         return;
     }
     uint32_t t = CLOCK_CNT;
-    while (SPAN_HW[20] & SPAN_BUSY) {
+    while (SPAN_R(20) & SPAN_BUSY) {
     }
     HWR_SpanStats.wait_clk += CLOCK_CNT - t;
     HWR_SpanStats.waits++;
     m_HwQueued = false;
 }
 
+// (the host's memory is coherent: nothing to do there)
 static void CacheFlush(const void *p, uint32_t n)
 {
+#ifdef M20_BOARD
     for (uintptr_t a = (uintptr_t)p & ~(uintptr_t)63; a < (uintptr_t)p + n;
          a += 64u) {
         asm volatile("cbo.flush (%0)" ::"r"(a) : "memory");
     }
+#endif
 }
 
 static void CacheClean(const void *p, uint32_t n)
 {
+#ifdef M20_BOARD
     for (uintptr_t a = (uintptr_t)p & ~(uintptr_t)63; a < (uintptr_t)p + n;
          a += 64u) {
         asm volatile("cbo.clean (%0)" ::"r"(a) : "memory");
     }
+#endif
 }
-#define SPAN_W(r, v) (SPAN_HW[r] = (v))
 #else
 // The engine's command trace (the harness's M20_TRACE=frames): the words
 // the board would write, as records of 32-bit words: {0, reg, value} a
@@ -184,9 +211,10 @@ static const uint8_t *m_PixLight;
 #define SC_LIGHTMAP(k) ((int32_t)m_PixLight[k])
 #endif
 
-// span_core.h, after its pixel macros (the lit spans' model only on the
-// host; the board needs its registers' layout)
-#ifdef M20_BOARD
+// span_core.h, after its pixel macros (the lit spans' model only with
+// SPANEMU=0 on the host; the board and the emulator need its registers'
+// layout)
+#ifdef M20_SPANREGS
 #define SC_PIXEL(i, tex_off, z16) ((void)0)
 #endif
 #include "span_core.h"
@@ -290,7 +318,7 @@ void HWR_SpanLevel(int32_t pages)
 #endif
         CacheClean(t, 65536);
     }
-#ifndef M20_BOARD
+#ifndef M20_SPANREGS
     m_TracePages = pages;
 #endif
 }
@@ -359,7 +387,7 @@ static void SpanBegin(void)
     if (!HWR_SpanOn) {
         return;
     }
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
     HwWait();
     uint32_t t_fl = HWR_CLK();
     CacheFlush(M20_Frame, M20_W * M20_H * 2);
@@ -376,7 +404,7 @@ static void SpanBegin(void)
         SpanLoadPalette(false);
     }
     m_EngClipL = m_EngClipR = -1;
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
     SPAN_W(16, SDRAM_OFF(M20_Frame));
     SPAN_W(17, M20_W);
     if (m_Stream) {   // the depth buffer, tested (direct register 6 at 0x68, bit 0)
@@ -681,7 +709,7 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     m_Eng.lw = lw;
 
     const uint8_t *tile = (const uint8_t *)TexturePagePtrs[tex];
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
     if (m_CpuY1 >= m_CpuY0) {   // the CPU's rows to SDRAM first
         uint32_t tcf = HWR_CLK();
         CacheFlush(M20_Frame + m_CpuY0 * M20_W,
@@ -736,7 +764,7 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     SPAN_W(14, (uint32_t)m_Eng.smax);
     SPAN_W(15, (uint32_t)m_Eng.tmax);
     HWR_TADD(regs_clk, treg);
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
     m_HwQueued = true;
 #endif
 
@@ -788,7 +816,7 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
     // EDGE (span_engine.v): the engine makes the rows of each pair of
     // edges; an edge it already has goes on from where it got to
     const XEDGE *sl = NULL, *sr = NULL;
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
     const bool edge_cmd = true;
 #else
     const bool edge_cmd = !m_TraceRows;
@@ -835,7 +863,7 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
             }
             sl = l;
             sr = r;
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
             HWR_Times.rows++;   // (EDGE commands)
             pix = 1;            // (the rows aren't seen here: the box is the vertices')
             y = yend;
@@ -850,9 +878,9 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
                 continue;
             }
             pix += (uint32_t)n;
-#ifdef M20_BOARD
+#ifdef M20_SPANREGS
             uint32_t tf = HWR_CLK();
-            SPAN_HW[0] = (uint32_t)n << 19 | (uint32_t)y << 10 | (uint32_t)x0;
+            SPAN_W(0, (uint32_t)n << 19 | (uint32_t)y << 10 | (uint32_t)x0);
             HWR_TADD(fifo_clk, tf);
             HWR_Times.rows++;
 #else
@@ -870,7 +898,7 @@ static bool SpanFaceV(const SVERT *v, int32_t n, uint16_t tex)
 #endif
         }
     }
-#if !(defined(M20_BOARD) && defined(M20_EDGES))   // (EDGE: the engine's own count)
+#if !(defined(M20_SPANREGS) && defined(M20_EDGES))   // (EDGE: the engine's own count)
     HWR_SpanStats.pixels += pix;
 #endif
     int32_t bx0 = pxmin < m_ClipL ? m_ClipL : pxmin;

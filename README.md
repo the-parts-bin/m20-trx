@@ -21,12 +21,54 @@ fps, City of Vilcabamba 11.3 fps, Lost Valley 20.2 fps; with the CPU only
 
 **Building:** `make` (the board: `build-640x360-z-t-e/tomb1.bin`) needs
 riscv64-unknown-elf-gcc, picolibc and core (`CORE`, `../core` by default).
-`make host` builds a test harness for 32-bit x86 Linux (SDL2, i386) with
-the board's frame and heap, which draws the engine's faces with its C
-model (`core/firmware/span_core.h`); its environment variables are listed
-in `src/m20/host_sdl.c` (`M20_SEED` repeats a run, `M20_TRACE` records the
-engine's commands for core's `sim/run_trace.sh`). The Makefile lists the
-other options (`TIMEDEMO`, `PROFILE`, `TIMERS`, the engine's features).
+The Makefile lists the other options (`TIMEDEMO`, `PROFILE`, `TIMERS`, the
+engine's features).
+
+**Host harness:** `make host` builds the game for 32-bit x86 Linux (SDL2,
+i386: `libsdl2-dev:i386`) as `build-host-640x360-t-e/tomb1`, with the
+board's frame size and heap (from the board's ELF, so build the board
+first). The renderer makes the board's register writes (the same code as
+on the board, `s_hwr_span.h`), which go to core's emulator of the span
+engine (`core/firmware/span_emu.c`, bit-exact with the RTL); the program is
+linked at 0x800000 so the frame, the depth buffer, the lightmaps and the
+heap with the texture pages sit where the engine addresses them
+(`SDRAM_OFF(p) = p - 0x800000`, checked). At the exit it prints the
+emulator's counts and its warnings, if any (`span_emu at the exit: ...
+zero_spans 0 z_layout 0 z_stale 0`; a warning means the board would draw
+something wrong). `make host SPANEMU=0` builds the older harness
+(`build-host-640x360-t-e-model/`), which draws the faces with the engine's
+C model (`core/firmware/span_core.h`) above the register level and can
+record the engine's commands (`M20_TRACE=frames`, for core's
+`sim/run_trace.sh`); its pictures are the same.
+
+Data and output: `M20_DATA` is the SD card's root as m20-system's
+`sdcard/make_sdcard.sh` builds it (`out/card`, holding `TOMB1/`), or
+`TOMB1/` itself, or any directory with `DATA/` and `cfg/`; by default the
+current directory. Everything written goes to `M20_OUT` (made if needed;
+by default the current directory): the pictures (`fNNNNN.ppm`), the game's
+log (`Tomb1Main.log`), its settings (`cfg/Tomb1Main_runtime.json5`) and
+saves (`saveati.N`), and traces. The game reads `M20_OUT` first, then
+`M20_DATA`, so the card stays as it was.
+
+    make && make host
+    # headless: Caves (level 1), 300 frames, four pictures into /tmp/tr
+    M20_DATA=../sdcard/out/card M20_OUT=/tmp/tr M20_LEVEL=1 \
+        M20_STEPS=300 M20_SHOTS=50,100,200,300 build-host-640x360-t-e/tomb1
+    # the title and its demo, 1200 frames, a picture every few hundred
+    M20_DATA=../sdcard/out/card M20_OUT=/tmp/tr M20_SEED=7 \
+        M20_STEPS=1200 M20_SHOTS=300,600,900,1200 build-host-640x360-t-e/tomb1
+    # with a window (1280 x 720; F12 a picture into M20_OUT)
+    M20_DATA=../sdcard/out/card M20_OUT=/tmp/tr build-host-640x360-t-e/tomb1
+
+`M20_STEPS=N` runs headless and exits after frame N (one game step a
+frame); `M20_SHOTS=a,b,c` saves those frames; `M20_KEYS=frame:hex,...`
+holds keys (INPUT_STATE bits) from those frames on; `M20_LEVEL=N` starts at
+level N (0 Lara's Home .. 15 the Great Pyramid); `M20_SEED=n` the same game
+on every run; `M20_CAMTEST=1` random cameras; `M20_SPAN=0` the CPU only
+(F7 toggles the engine in the window); `M20_ZBUF`, `M20_ZENGINE` the depth
+modes; `M20_EMUSTATS=n` the emulator's counts every n frames too;
+`M20_HEADLESS=1` no window without `M20_STEPS`; `M20_NOSOUND=1`. The full
+list is at the top of `src/m20/host_sdl.c`.
 
 **On the card:** `TOMB1.BIN` and `TOMB1/` with `DATA/` (the game's files,
 see `data/README.md`) and `cfg/` (`bin/cfg` here); m20-system's

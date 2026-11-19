@@ -2756,15 +2756,12 @@ const char *json_get_error_description(enum json_parse_error_e error)
 
 struct json_number_s *json_number_new_int(int number)
 {
-    size_t size = 1;
-    int tmp = number;
-    while (tmp) {
-        tmp /= 10;
-        size++;
-    }
+    // (m20: sized by snprintf; counting digits left no room for 0's digit
+    // or a minus sign: a one-byte heap overflow)
+    size_t size = (size_t)snprintf(NULL, 0, "%d", number) + 1;
 
     char *buf = malloc(size);
-    sprintf(buf, "%d", number);
+    snprintf(buf, size, "%d", number);
     struct json_number_s *elem = malloc(sizeof(struct json_number_s));
     elem->number = buf;
     elem->number_size = strlen(buf);

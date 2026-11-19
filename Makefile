@@ -9,8 +9,12 @@
 # (DATA/ and cfg/, as for the harness).
 #
 # make host: the test harness, 32-bit x86 Linux with SDL2 (libsdl2-dev:i386),
-# with the board's frame size and heap: build-host-WxH/tomb1 (RES=640x360 by
-# default; RES=320x240). Run it from a directory holding cfg/ and DATA/.
+# with the board's frame size and heap: build-host-WxH-t-e/tomb1 (RES=640x360
+# by default; RES=320x240). The span engine's faces go through core's
+# emulator of it (core/firmware/span_emu.c) with the board's register
+# writes; SPANEMU=0 draws them with its C model instead (-model). M20_DATA
+# names the card's root (or TOMB1/, or any directory holding cfg/ and
+# DATA/; default the current directory), M20_OUT where it writes (README.md).
 
 all: board
 
@@ -242,16 +246,24 @@ $(B)/tomb1.bin: $(B)/tomb1.elf
 # -------------------------------------------------------------------------
 # The host harness
 # -------------------------------------------------------------------------
-HB := build-host-$(RES)$(if $(TILED),-t)$(if $(EDGES),-e)
-CFLAGS_HOST := -m32 -msse2 -mfpmath=sse -O2 -g -std=gnu11 -D_GNU_SOURCE -DM20 -DM20_W=$(RES_W) -DM20_H=$(RES_H) $(if $(TILED),-DM20_TILED) $(if $(EDGES),-DM20_EDGES) \
+# The harness is linked at 0x800000 so that what the engine addresses (the
+# frame, the depth buffer, the lightmaps, the heap with the texture pages)
+# sits in the 8 MB at 0x800000 that stand for the SDRAM: SDRAM_OFF(p) = p -
+# 0x800000 as on the board.
+SPANEMU ?= 1
+EMU := $(filter-out 0,$(SPANEMU))
+HB := build-host-$(RES)$(if $(TILED),-t)$(if $(EDGES),-e)$(if $(EMU),,-model)
+CFLAGS_HOST := -m32 -msse2 -mfpmath=sse -O2 -g -fno-pie -std=gnu11 -D_GNU_SOURCE -DM20 -DM20_W=$(RES_W) -DM20_H=$(RES_H) $(if $(TILED),-DM20_TILED) $(if $(EDGES),-DM20_EDGES) \
+               $(if $(EMU),-DM20_SPANEMU) \
                -DM20_HEAP=$(M20_HEAP)u -DM20_GAMEBUF=$(M20_GAMEBUF) -DVERSION='"T1M m20"' \
                -Isrc -I$(CORE_FW) -Wall -Wno-unused -Wno-sign-compare -Wno-missing-braces -Wno-parentheses \
                -Wno-pointer-sign -Wno-unused-result -Wno-format-truncation \
                $(shell PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config --cflags sdl2)
 LIBS_HOST := $(shell PKG_CONFIG_PATH=/usr/lib/i386-linux-gnu/pkgconfig pkg-config --libs sdl2) -lm
-WRAP := -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=strdup
+WRAP := -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc -Wl,--wrap=strdup \
+        -Wl,--wrap=fopen
 
-HOBJ := $(patsubst src/%.c,$(HB)/%.o,$(SRC) src/m20/host_sdl.c)
+HOBJ := $(patsubst src/%.c,$(HB)/%.o,$(SRC) src/m20/host_sdl.c) $(if $(EMU),$(HB)/core/span_emu.o)
 
 host: $(HB)/tomb1
 
@@ -259,9 +271,14 @@ $(HB)/%.o: src/%.c Makefile
 	@mkdir -p $(dir $@)
 	gcc $(CFLAGS_HOST) -MMD -MP -c $< -o $@
 
+$(HB)/core/span_emu.o: $(CORE_FW)/span_emu.c Makefile
+	@mkdir -p $(dir $@)
+	gcc $(CFLAGS_HOST) -MMD -MP -c $< -o $@
+
 $(HB)/tomb1: $(HOBJ)
 	@echo "heap: $(M20_HEAP)"
-	gcc -m32 $(HOBJ) $(WRAP) $(LIBS_HOST) -o $@
+	gcc -m32 -no-pie -Wl,-Ttext-segment=0x800000 $(HOBJ) $(WRAP) $(LIBS_HOST) -o $@
+	@size $@
 
 -include $(HOBJ:.o=.d)
 
