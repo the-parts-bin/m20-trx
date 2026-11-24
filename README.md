@@ -13,11 +13,14 @@ precision). The opaque textured faces go to core's span engine
 per pixel from a small lightmap, tests depth, and walks their edges
 itself; the CPU draws the rest (transparent faces, sprites, shadows, the
 2D) in the same order. The levels' pages are tiled for the engine's
-texel cache, and the faces under water use its second palette.
+texel cache, and the faces under water use its second palette. The
+display and z buffers are 2 KB-aligned (the engine finds a pixel's depth a
+multiple of 2 KB past it), and the depth test is written on or off every
+frame: no reset clears it, so it can't be assumed off.
 
-**Speed** (640 × 360, the timedemos: `make TIMEDEMO=1`): the title 29.8
-fps, City of Vilcabamba 11.3 fps, Lost Valley 20.2 fps; with the CPU only
-(`SPANOFF=1`) Vilcabamba runs at 3.3 fps.
+**Speed** (640 × 360 at 60 MHz, the timedemos: `make TIMEDEMO=1`): the
+title 29.8 fps, City of Vilcabamba 12.7 fps, Lost Valley 20.2 fps; with the
+CPU only (`SPANOFF=1`) Vilcabamba runs at 3.4 fps.
 
 **Building:** `make` (the board: `build-640x360-z-t-e/tomb1.bin`) needs
 riscv64-unknown-elf-gcc, picolibc and core (`CORE`, `../core` by default).
